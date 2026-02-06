@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "engram-memory": {
+      "command": "/absolute/path/to/engram",
+      "args": [],
+      "env": {
+        "DUCKDB_PATH": "/absolute/path/to/engram.duckdb",
+        "OLLAMA_URL": "http://localhost:11434",
+        "EMBEDDING_MODEL": "nomic-embed-text"
+      }
+    }
+  }
+}
