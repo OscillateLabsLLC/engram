@@ -68,15 +68,21 @@ dev:
 # Build and run for quick testing
 run: build dev
 
-# Build Docker image
+# Build Docker image for local (native architecture)
 docker-build:
     docker build -t engram:latest .
     @echo "Docker image built: engram:latest"
+
+# Build Docker image for x86_64 (for deployment to remote servers)
+docker-build-amd64:
+    docker buildx build --platform linux/amd64 -t engram:latest-amd64 --load .
+    @echo "✅ Docker image built for amd64: engram:latest-amd64"
 
 # Run in Docker
 docker-run:
     docker run -it --rm \
         -e OLLAMA_URL=http://host.docker.internal:11434 \
+        -p 8080:8080 \
         -v {{justfile_directory()}}/data:/data \
         engram:latest
 

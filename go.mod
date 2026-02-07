@@ -3,6 +3,8 @@ module github.com/oscillatelabsllc/engram
 go 1.25.6
 
 require (
+	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/cors v1.2.2
 	github.com/google/uuid v1.6.0
 	github.com/marcboeker/go-duckdb v1.8.5
 	github.com/mark3labs/mcp-go v0.43.2

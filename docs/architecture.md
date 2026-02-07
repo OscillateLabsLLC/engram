@@ -98,7 +98,9 @@ Episodes can be marked as expired but not deleted. This prevents accidental memo
 - **Database:** DuckDB with VSS extension — single-file, portable, HNSW indexing, native LIST and JSON support
 - **Application:** Go with official MCP SDK — single static binary, cross-platform
 - **Embeddings:** Ollama — local generation, OpenAI-compatible `/v1/embeddings` endpoint, no external API costs
-- **Transport:** stdio (for Claude Desktop/Code/Cursor), HTTP planned for future
+- **Transport:** 
+  - stdio (for local Claude Desktop/Code/Cursor)
+  - HTTP/SSE (for remote access and Open WebUI)
 
 ## Deployment Options
 
@@ -106,10 +108,10 @@ Episodes can be marked as expired but not deleted. This prevents accidental memo
 Single executable + DuckDB file. No Python, no system packages, no database server.
 
 **Docker container:**
-Multi-stage build, Alpine-based final image. See the [`Dockerfile`](../Dockerfile).
+Multi-stage build using Debian Bookworm (glibc compatibility). See the [`Dockerfile`](../Dockerfile).
 
 **Kubernetes:**
-StatefulSet with PersistentVolume for the `.duckdb` file.
+Deployment with PersistentVolume for the `.duckdb` file. Requires ingress configuration for SSE support (no buffering, long timeouts).
 
 ## Design Principles
 
@@ -130,7 +132,6 @@ StatefulSet with PersistentVolume for the `.duckdb` file.
 
 ## Future Roadmap
 
-- HTTP transport for OpenWebUI and other HTTP-based clients
 - Layer 2 knowledge graph with entity extraction
 - Memory consolidation and summarization
 - Similarity score in search results and `min_similarity` threshold

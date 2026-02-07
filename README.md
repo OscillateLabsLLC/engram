@@ -91,7 +91,14 @@ See [`.env.example`](.env.example) for a template.
 
 ## MCP Client Integration
 
-### Claude Desktop
+Engram supports two transport modes:
+
+1. **stdio** (default) — Local binary execution via command-line
+2. **HTTP/SSE** — Remote server via streaming HTTP (requires deployed server)
+
+### stdio Transport (Local)
+
+#### Claude Desktop
 
 Add to your `claude_desktop_config.json` (see [`claude_desktop_config.example.json`](claude_desktop_config.example.json)):
 
@@ -115,9 +122,48 @@ Add to your `claude_desktop_config.json` (see [`claude_desktop_config.example.js
 
 For Windows-specific setup, see [WINDOWS.md](WINDOWS.md).
 
-### Claude Code / Cursor
+#### Claude Code / Cursor
 
 Same MCP server configuration — add it to your project or user settings.
+
+### HTTP/SSE Transport (Remote)
+
+For connecting to a remote Engram server deployed via Docker/Kubernetes:
+
+#### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "engram-memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "supergateway",
+        "--sse",
+        "https://your-engram-server.example.com/mcp/sse"
+      ]
+    }
+  }
+}
+```
+
+#### Cursor
+
+Add to `.cursor/mcp.json` in your project or user settings:
+
+```json
+{
+  "mcpServers": {
+    "engram-memory": {
+      "url": "https://your-engram-server.example.com/mcp/sse",
+      "transport": "streamableHttp"
+    }
+  }
+}
+```
+
+> **Note:** SSE transport requires deploying Engram in HTTP mode. See [Deployment](#deployment) below.
 
 ### Verify It Works
 
@@ -181,6 +227,8 @@ Health check — returns system status and version.
 
 ## Docker
 
+### Local/stdio Mode (Default)
+
 ```bash
 docker build -t engram .
 docker run -e OLLAMA_URL=http://host.docker.internal:11434 \
@@ -188,6 +236,109 @@ docker run -e OLLAMA_URL=http://host.docker.internal:11434 \
            -e DUCKDB_PATH=/data/engram.duckdb \
            engram
 ```
+
+### HTTP/SSE Mode (Remote Access)
+
+```bash
+docker build -t engram .
+docker run -p 8080:8080 \
+           -e OLLAMA_URL=http://host.docker.internal:11434 \
+           -v $(pwd)/data:/data \
+           -e DUCKDB_PATH=/data/engram.duckdb \
+           engram -mode http -port 8080
+```
+
+HTTP mode exposes:
+- `/mcp/sse` — MCP over Server-Sent Events (for Cursor/Claude Desktop via remote)
+- `/mcp/message` — MCP message endpoint
+- `/api/v1/*` — REST API for Open WebUI integration
+- `/openapi.json` — OpenAPI 3.0 specification
+- `/health`, `/ready` — Kubernetes health probes
+
+## Kubernetes Deployment
+
+Engram can be deployed to Kubernetes with persistent storage:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engram
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: engram
+          image: your-registry/engram:latest
+          command: ["/engram"]
+          args: ["-mode", "http", "-port", "8080"]
+          env:
+            - name: DUCKDB_PATH
+              value: "/data/engram.duckdb"
+            - name: OLLAMA_URL
+              value: "http://ollama-service:11434"
+            - name: EMBEDDING_MODEL
+              value: "nomic-embed-text"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: engram-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: engram
+spec:
+  selector:
+    app: engram
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: engram
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+spec:
+  rules:
+    - host: engram.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: engram
+                port:
+                  number: 8080
+```
+
+> **Important:** SSE connections require long timeouts and no buffering. The ingress annotations above are critical for stable MCP connections.
 
 ## Architecture
 

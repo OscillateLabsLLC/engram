@@ -458,3 +458,8 @@ func (s *Server) handleGetStatus(ctx context.Context, request mcp.CallToolReques
 func (s *Server) Serve() error {
 	return server.ServeStdio(s.mcpServer)
 }
+
+// GetMCPServer returns the underlying MCP server for use with other transports (e.g., SSE)
+func (s *Server) GetMCPServer() *server.MCPServer {
+	return s.mcpServer
+}
