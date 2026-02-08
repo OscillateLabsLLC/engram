@@ -19,12 +19,12 @@ import (
 
 // Server implements the HTTP API server for Engram
 type Server struct {
-	store      *db.Store
-	embedder   *embedding.Client
-	router     *chi.Mux
-	port       string
-	sseServer  *server.SSEServer
-	mcpServer  *server.MCPServer
+	store     *db.Store
+	embedder  *embedding.Client
+	router    *chi.Mux
+	port      string
+	sseServer *server.SSEServer
+	mcpServer *server.MCPServer
 }
 
 // NewServer creates a new HTTP API server
@@ -73,7 +73,7 @@ func (s *Server) setupRouter() {
 	// API routes WITH timeout middleware (these are short-lived REST requests)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(middleware.Timeout(60 * time.Second)) // Only apply timeout to API routes
-		
+
 		// Memory operations
 		r.Post("/memory", s.handleAddMemory)
 		r.Get("/memory/search", s.handleSearch)
@@ -142,7 +142,7 @@ func successResponse(w http.ResponseWriter, data interface{}) {
 // AddMCPServer adds MCP SSE transport to the HTTP server
 func (s *Server) AddMCPServer(mcpServer *server.MCPServer) {
 	s.mcpServer = mcpServer
-	
+
 	// Create SSE server with base path and keep-alive enabled
 	s.sseServer = server.NewSSEServer(
 		mcpServer,
@@ -152,10 +152,10 @@ func (s *Server) AddMCPServer(mcpServer *server.MCPServer) {
 		server.WithKeepAlive(true),
 		server.WithKeepAliveInterval(15*time.Second), // Send keep-alive every 15s
 	)
-	
+
 	// Mount SSE server handler at the base path - it handles subrouting internally
 	s.router.Mount("/mcp", s.sseServer)
-	
+
 	fmt.Fprintf(os.Stderr, "MCP SSE endpoint available at /mcp/sse\n")
 	fmt.Fprintf(os.Stderr, "MCP Message endpoint available at /mcp/message\n")
 	fmt.Fprintf(os.Stderr, "SSE keep-alive enabled (15s interval)\n")

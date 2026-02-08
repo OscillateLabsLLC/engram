@@ -302,7 +302,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 		"components": map[string]interface{}{
 			"schemas": map[string]interface{}{
 				"AddMemoryRequest": map[string]interface{}{
-					"type": "object",
+					"type":     "object",
 					"required": []string{"content", "source"},
 					"properties": map[string]interface{}{
 						"content": map[string]interface{}{

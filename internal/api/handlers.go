@@ -131,7 +131,7 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Parse query parameters
 	var req SearchRequest
-	
+
 	// Try JSON body first, fall back to query params
 	if r.Header.Get("Content-Type") == "application/json" {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -145,7 +145,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		req.Source = r.URL.Query().Get("source")
 		req.Before = r.URL.Query().Get("before")
 		req.After = r.URL.Query().Get("after")
-		
+
 		if maxResults := r.URL.Query().Get("max_results"); maxResults != "" {
 			fmt.Sscanf(maxResults, "%d", &req.MaxResults)
 		}
@@ -225,7 +225,7 @@ func (s *Server) handleGetEpisodes(w http.ResponseWriter, r *http.Request) {
 	req.GroupID = r.URL.Query().Get("group_id")
 	req.Before = r.URL.Query().Get("before")
 	req.After = r.URL.Query().Get("after")
-	
+
 	if maxResults := r.URL.Query().Get("max_results"); maxResults != "" {
 		fmt.Sscanf(maxResults, "%d", &req.MaxResults)
 	}

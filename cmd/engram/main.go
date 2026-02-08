@@ -71,11 +71,11 @@ func main() {
 		// HTTP mode with both REST API and MCP SSE
 		// Create MCP server for SSE transport
 		mcpServer := mcp.NewServer(store, embedder)
-		
+
 		// Create API server with both REST and MCP SSE
 		apiServer := api.NewServer(store, embedder, *port)
 		apiServer.AddMCPServer(mcpServer.GetMCPServer())
-		
+
 		if err := apiServer.Serve(); err != nil {
 			log.Fatalf("Server error: %v", err)
 		}

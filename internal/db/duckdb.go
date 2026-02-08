@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
-	_ "github.com/marcboeker/go-duckdb"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
 
