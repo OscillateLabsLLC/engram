@@ -3,8 +3,11 @@
 [![Build](https://github.com/OscillateLabsLLC/engram/actions/workflows/build.yml/badge.svg)](https://github.com/OscillateLabsLLC/engram/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://oscillatelabsllc.github.io/engram/)
 
 Event-sourced memory system for AI agents. No LLM in the write path — just reliable episode storage with semantic search.
+
+**[📖 View Documentation](https://oscillatelabsllc.github.io/engram/)**
 
 ## Why Engram?
 
