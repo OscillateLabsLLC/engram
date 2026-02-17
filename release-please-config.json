@@ -1,0 +1,23 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "engram",
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "perf", "section": "Performance Improvements" },
+        { "type": "docs", "section": "Documentation" },
+        { "type": "test", "section": "Tests" },
+        { "type": "chore", "section": "Miscellaneous", "hidden": false }
+      ],
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "claude_desktop_config.example.json",
+          "jsonpath": "$.mcpServers.\"engram-memory\".version"
+        }
+      ]
+    }
+  }
+}

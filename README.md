@@ -1,5 +1,6 @@
 # Engram
 
+[![Status: Active](https://img.shields.io/badge/status-active-brightgreen)](https://github.com/OscillateLabsLLC/.github/blob/main/SUPPORT_STATUS.md)
 [![Build](https://github.com/OscillateLabsLLC/engram/actions/workflows/build.yml/badge.svg)](https://github.com/OscillateLabsLLC/engram/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -169,6 +170,18 @@ For a deeper dive into the architecture, see [`docs/architecture.md`](docs/archi
 - [MCP Integration Guide](docs/mcp-integration.md) - Client setup, available tools, troubleshooting
 - [Deployment Guide](docs/deployment.md) - Docker Compose, Kubernetes, production deployment
 - [Architecture](docs/architecture.md) - Technical deep dive into system design
+
+## Testing
+
+The project includes comprehensive unit tests:
+
+```bash
+# Run all tests
+just test
+
+# Run with coverage
+just test-coverage
+```
 
 ## Contributing
 

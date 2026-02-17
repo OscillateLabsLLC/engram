@@ -1,0 +1,644 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>db: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/oscillatelabsllc/engram/internal/db/duckdb.go (82.5%)</option>
+				
+				<option value="file1">github.com/oscillatelabsllc/engram/internal/embedding/client.go (91.3%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">package db
+
+import (
+        "context"
+        "database/sql"
+        "encoding/json"
+        "fmt"
+        "os"
+        "strings"
+        "time"
+
+        _ "github.com/duckdb/duckdb-go/v2"
+        "github.com/google/uuid"
+        "github.com/oscillatelabsllc/engram/internal/models"
+)
+
+// Store wraps DuckDB operations
+type Store struct {
+        db *sql.DB
+}
+
+// NewStore creates a new DuckDB store
+func NewStore(dbPath string) (*Store, error) <span class="cov8" title="1">{
+        db, err := sql.Open("duckdb", dbPath)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to open database: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">store := &amp;Store{db: db}
+        if err := store.initialize(); err != nil </span><span class="cov0" title="0">{
+                db.Close()
+                return nil, fmt.Errorf("failed to initialize database: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return store, nil</span>
+}
+
+// initialize sets up the database schema and extensions
+func (s *Store) initialize() error <span class="cov8" title="1">{
+        schema := `
+                -- Install and load VSS extension
+                INSTALL vss;
+                LOAD vss;
+
+                -- Create episodes table if it doesn't exist
+                CREATE TABLE IF NOT EXISTS episodes (
+                        id VARCHAR PRIMARY KEY,
+                        content TEXT NOT NULL,
+                        name VARCHAR,
+                        source VARCHAR NOT NULL,
+                        source_model VARCHAR,
+                        source_description TEXT,
+                        group_id VARCHAR DEFAULT 'default',
+                        tags VARCHAR[],
+                        embedding FLOAT[768],
+                        created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                        valid_at TIMESTAMPTZ,
+                        expired_at TIMESTAMPTZ,
+                        metadata JSON
+                );
+
+                -- Create indices if they don't exist
+                CREATE INDEX IF NOT EXISTS idx_episodes_created_at ON episodes (created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_episodes_group_id ON episodes (group_id);
+                CREATE INDEX IF NOT EXISTS idx_episodes_valid_at ON episodes (valid_at);
+                -- Note: No index on expired_at due to DuckDB limitation with UPDATE on indexed TIMESTAMP columns
+                CREATE INDEX IF NOT EXISTS idx_episodes_source ON episodes (source);
+        `
+
+        _, err := s.db.Exec(schema)
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to execute schema: %w", err)
+        }</span>
+
+        // Try to create HNSW index (will fail if already exists, which is fine)
+        // Note: VSS extension syntax may vary, this is a placeholder
+        <span class="cov8" title="1">_, _ = s.db.Exec("CREATE INDEX IF NOT EXISTS idx_episodes_embedding ON episodes USING HNSW (embedding)")
+
+        return nil</span>
+}
+
+// InsertEpisode adds a new episode to the store
+func (s *Store) InsertEpisode(ctx context.Context, ep *models.Episode) error <span class="cov8" title="1">{
+        if ep.ID == "" </span><span class="cov8" title="1">{
+                ep.ID = uuid.New().String()
+        }</span>
+        <span class="cov8" title="1">if ep.CreatedAt.IsZero() </span><span class="cov8" title="1">{
+                ep.CreatedAt = time.Now()
+        }</span>
+        <span class="cov8" title="1">if ep.GroupID == "" </span><span class="cov8" title="1">{
+                ep.GroupID = "default"
+        }</span>
+
+        // Convert tags to JSON for DuckDB LIST type
+        <span class="cov8" title="1">var tagsJSON interface{}
+        if len(ep.Tags) &gt; 0 </span><span class="cov8" title="1">{
+                tagsData, _ := json.Marshal(ep.Tags)
+                tagsJSON = string(tagsData)
+        }</span> else<span class="cov8" title="1"> {
+                tagsJSON = nil
+        }</span>
+
+        // Convert embedding to JSON for DuckDB FLOAT[] type
+        <span class="cov8" title="1">var embeddingJSON interface{}
+        if len(ep.Embedding) &gt; 0 </span><span class="cov8" title="1">{
+                embeddingData, _ := json.Marshal(ep.Embedding)
+                embeddingJSON = string(embeddingData)
+        }</span> else<span class="cov8" title="1"> {
+                embeddingJSON = nil
+        }</span>
+
+        // Handle metadata JSON - pass NULL if empty
+        <span class="cov8" title="1">var metadataJSON interface{}
+        if ep.Metadata != "" </span><span class="cov8" title="1">{
+                metadataJSON = ep.Metadata
+        }</span> else<span class="cov8" title="1"> {
+                metadataJSON = nil
+        }</span>
+
+        <span class="cov8" title="1">query := `
+                INSERT INTO episodes (
+                        id, content, name, source, source_model, source_description,
+                        group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `
+
+        _, err := s.db.ExecContext(ctx, query,
+                ep.ID, ep.Content, ep.Name, ep.Source, ep.SourceModel, ep.SourceDescription,
+                ep.GroupID, tagsJSON, embeddingJSON, ep.CreatedAt, ep.ValidAt, ep.ExpiredAt, metadataJSON,
+        )
+
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to insert episode: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// Search finds episodes matching the given parameters
+func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]models.Episode, error) <span class="cov8" title="1">{
+        var conditions []string
+        var args []interface{}
+        argIdx := 1
+
+        // Base query - includes embedding for potential similarity calculation
+        query := `
+                SELECT id, content, name, source, source_model, source_description,
+                       group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+                FROM episodes
+                WHERE 1=1
+        `
+
+        // Filter out episodes without embeddings if we have a query embedding
+        if params.Query != "" </span><span class="cov0" title="0">{
+                conditions = append(conditions, "embedding IS NOT NULL")
+        }</span>
+
+        // Group filter
+        <span class="cov8" title="1">if params.GroupID != "" </span><span class="cov8" title="1">{
+                conditions = append(conditions, fmt.Sprintf("group_id = $%d", argIdx))
+                args = append(args, params.GroupID)
+                argIdx++
+        }</span>
+
+        // Temporal filters
+        <span class="cov8" title="1">if params.Before != nil </span><span class="cov0" title="0">{
+                conditions = append(conditions, fmt.Sprintf("created_at &lt; $%d", argIdx))
+                args = append(args, *params.Before)
+                argIdx++
+        }</span>
+        <span class="cov8" title="1">if params.After != nil </span><span class="cov0" title="0">{
+                conditions = append(conditions, fmt.Sprintf("created_at &gt; $%d", argIdx))
+                args = append(args, *params.After)
+                argIdx++
+        }</span>
+
+        // Expired filter
+        <span class="cov8" title="1">if !params.IncludeExpired </span><span class="cov8" title="1">{
+                conditions = append(conditions, "(expired_at IS NULL OR expired_at &gt; CURRENT_TIMESTAMP)")
+        }</span>
+
+        // Source filter
+        <span class="cov8" title="1">if params.Source != "" </span><span class="cov8" title="1">{
+                conditions = append(conditions, fmt.Sprintf("source = $%d", argIdx))
+                args = append(args, params.Source)
+                argIdx++
+        }</span>
+
+        // Tags filter (all tags must be present)
+        <span class="cov8" title="1">if len(params.Tags) &gt; 0 </span><span class="cov8" title="1">{
+                for _, tag := range params.Tags </span><span class="cov8" title="1">{
+                        conditions = append(conditions, fmt.Sprintf("list_contains(tags, $%d)", argIdx))
+                        args = append(args, tag)
+                        argIdx++
+                }</span>
+        }
+
+        // Add conditions to query
+        <span class="cov8" title="1">if len(conditions) &gt; 0 </span><span class="cov8" title="1">{
+                query += " AND " + strings.Join(conditions, " AND ")
+        }</span>
+
+        // Order by semantic similarity if we have a query embedding, otherwise by created_at
+        <span class="cov8" title="1">if len(params.QueryEmbedding) &gt; 0 </span><span class="cov8" title="1">{
+                // Convert embedding to JSON array format for DuckDB
+                embeddingJSON, err := json.Marshal(params.QueryEmbedding)
+                if err != nil </span><span class="cov0" title="0">{
+                        // Fall back to temporal ordering if embedding conversion fails
+                        fmt.Fprintf(os.Stderr, "Warning: Failed to marshal query embedding: %v\n", err)
+                        query += " ORDER BY created_at DESC"
+                }</span> else<span class="cov8" title="1"> {
+                        // Use VSS array_cosine_similarity for semantic ranking
+                        // Higher similarity scores rank first (DESC order)
+                        query += fmt.Sprintf(" ORDER BY array_cosine_similarity(embedding, %s::FLOAT[768]) DESC", string(embeddingJSON))
+                }</span>
+        } else<span class="cov8" title="1"> {
+                // Fall back to temporal ordering when no query embedding available
+                query += " ORDER BY created_at DESC"
+        }</span>
+
+        // Limit results
+        <span class="cov8" title="1">if params.MaxResults &gt; 0 </span><span class="cov8" title="1">{
+                query += fmt.Sprintf(" LIMIT %d", params.MaxResults)
+        }</span> else<span class="cov0" title="0"> {
+                query += " LIMIT 10"
+        }</span>
+
+        <span class="cov8" title="1">rows, err := s.db.QueryContext(ctx, query, args...)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to execute search query: %w", err)
+        }</span>
+        <span class="cov8" title="1">defer rows.Close()
+
+        return s.scanEpisodes(rows)</span>
+}
+
+// GetEpisode retrieves a single episode by ID
+func (s *Store) GetEpisode(ctx context.Context, id string) (*models.Episode, error) <span class="cov8" title="1">{
+        query := `
+                SELECT id, content, name, source, source_model, source_description,
+                       group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+                FROM episodes
+                WHERE id = ?
+        `
+
+        row := s.db.QueryRowContext(ctx, query, id)
+        ep, err := s.scanEpisode(row)
+        if err == sql.ErrNoRows </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("episode not found: %s", id)
+        }</span>
+        <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to get episode: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">return ep, nil</span>
+}
+
+// UpdateEpisode modifies an existing episode
+func (s *Store) UpdateEpisode(ctx context.Context, id string, params models.UpdateParams) error <span class="cov8" title="1">{
+        var updates []string
+        var args []interface{}
+
+        // Convert tags to JSON if provided
+        if params.Tags != nil </span><span class="cov8" title="1">{
+                tagsJSON, _ := json.Marshal(*params.Tags)
+                updates = append(updates, "tags = ?")
+                args = append(args, string(tagsJSON))
+        }</span>
+
+        <span class="cov8" title="1">if params.ExpiredAt != nil </span><span class="cov8" title="1">{
+                updates = append(updates, "expired_at = ?")
+                args = append(args, *params.ExpiredAt)
+        }</span>
+
+        <span class="cov8" title="1">if params.Metadata != nil </span><span class="cov8" title="1">{
+                updates = append(updates, "metadata = ?")
+                args = append(args, *params.Metadata)
+        }</span>
+
+        <span class="cov8" title="1">if len(updates) == 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("no updates provided")
+        }</span>
+
+        <span class="cov8" title="1">args = append(args, id)
+        query := fmt.Sprintf("UPDATE episodes SET %s WHERE id = ?", strings.Join(updates, ", "))
+
+        result, err := s.db.ExecContext(ctx, query, args...)
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to update episode: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">rows, err := result.RowsAffected()
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to get rows affected: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if rows == 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("episode not found: %s", id)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// DeleteEpisode removes an episode from the store
+func (s *Store) DeleteEpisode(ctx context.Context, id string) error <span class="cov8" title="1">{
+        result, err := s.db.ExecContext(ctx, "DELETE FROM episodes WHERE id = ?", id)
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to delete episode: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">rows, err := result.RowsAffected()
+        if err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to get rows affected: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if rows == 0 </span><span class="cov8" title="1">{
+                return fmt.Errorf("episode not found: %s", id)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// Close closes the database connection
+func (s *Store) Close() error <span class="cov8" title="1">{
+        return s.db.Close()
+}</span>
+
+// Helper functions for scanning rows
+
+func (s *Store) scanEpisode(row *sql.Row) (*models.Episode, error) <span class="cov8" title="1">{
+        var ep models.Episode
+        var tagsRaw, embeddingRaw, metadataRaw interface{}
+
+        err := row.Scan(
+                &amp;ep.ID, &amp;ep.Content, &amp;ep.Name, &amp;ep.Source, &amp;ep.SourceModel, &amp;ep.SourceDescription,
+                &amp;ep.GroupID, &amp;tagsRaw, &amp;embeddingRaw, &amp;ep.CreatedAt, &amp;ep.ValidAt, &amp;ep.ExpiredAt, &amp;metadataRaw,
+        )
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+
+        // Parse tags - DuckDB returns VARCHAR[] as []interface{}
+        <span class="cov8" title="1">if tagsRaw != nil </span><span class="cov8" title="1">{
+                switch v := tagsRaw.(type) </span>{
+                case []interface{}:<span class="cov8" title="1">
+                        ep.Tags = make([]string, len(v))
+                        for i, tag := range v </span><span class="cov8" title="1">{
+                                if s, ok := tag.(string); ok </span><span class="cov8" title="1">{
+                                        ep.Tags[i] = s
+                                }</span>
+                        }
+                case []string:<span class="cov0" title="0">
+                        ep.Tags = v</span>
+                }
+        }
+
+        // Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
+        <span class="cov8" title="1">if embeddingRaw != nil </span><span class="cov8" title="1">{
+                switch v := embeddingRaw.(type) </span>{
+                case []interface{}:<span class="cov8" title="1">
+                        ep.Embedding = make([]float32, len(v))
+                        for i, val := range v </span><span class="cov8" title="1">{
+                                if f, ok := val.(float32); ok </span><span class="cov8" title="1">{
+                                        ep.Embedding[i] = f
+                                }</span>
+                        }
+                case []float32:<span class="cov0" title="0">
+                        ep.Embedding = v</span>
+                }
+        }
+
+        // Metadata - DuckDB returns JSON as map[string]interface{}, need to re-encode
+        <span class="cov8" title="1">if metadataRaw != nil </span><span class="cov8" title="1">{
+                switch v := metadataRaw.(type) </span>{
+                case map[string]interface{}:<span class="cov8" title="1">
+                        if data, err := json.Marshal(v); err == nil </span><span class="cov8" title="1">{
+                                ep.Metadata = string(data)
+                        }</span>
+                case string:<span class="cov0" title="0">
+                        ep.Metadata = v</span>
+                }
+        }
+
+        <span class="cov8" title="1">return &amp;ep, nil</span>
+}
+
+func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) <span class="cov8" title="1">{
+        var episodes []models.Episode
+
+        for rows.Next() </span><span class="cov8" title="1">{
+                var ep models.Episode
+                var tagsRaw, embeddingRaw, metadataRaw interface{}
+
+                err := rows.Scan(
+                        &amp;ep.ID, &amp;ep.Content, &amp;ep.Name, &amp;ep.Source, &amp;ep.SourceModel, &amp;ep.SourceDescription,
+                        &amp;ep.GroupID, &amp;tagsRaw, &amp;embeddingRaw, &amp;ep.CreatedAt, &amp;ep.ValidAt, &amp;ep.ExpiredAt, &amp;metadataRaw,
+                )
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, err
+                }</span>
+
+                // Parse tags - DuckDB returns VARCHAR[] as []interface{}
+                <span class="cov8" title="1">if tagsRaw != nil </span><span class="cov8" title="1">{
+                        switch v := tagsRaw.(type) </span>{
+                        case []interface{}:<span class="cov8" title="1">
+                                ep.Tags = make([]string, len(v))
+                                for i, tag := range v </span><span class="cov8" title="1">{
+                                        if s, ok := tag.(string); ok </span><span class="cov8" title="1">{
+                                                ep.Tags[i] = s
+                                        }</span>
+                                }
+                        case []string:<span class="cov0" title="0">
+                                ep.Tags = v</span>
+                        }
+                }
+
+                // Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
+                <span class="cov8" title="1">if embeddingRaw != nil </span><span class="cov8" title="1">{
+                        switch v := embeddingRaw.(type) </span>{
+                        case []interface{}:<span class="cov8" title="1">
+                                ep.Embedding = make([]float32, len(v))
+                                for i, val := range v </span><span class="cov8" title="1">{
+                                        if f, ok := val.(float32); ok </span><span class="cov8" title="1">{
+                                                ep.Embedding[i] = f
+                                        }</span>
+                                }
+                        case []float32:<span class="cov0" title="0">
+                                ep.Embedding = v</span>
+                        }
+                }
+
+                // Metadata - DuckDB returns JSON as map[string]interface{}, need to re-encode
+                <span class="cov8" title="1">if metadataRaw != nil </span><span class="cov0" title="0">{
+                        switch v := metadataRaw.(type) </span>{
+                        case map[string]interface{}:<span class="cov0" title="0">
+                                if data, err := json.Marshal(v); err == nil </span><span class="cov0" title="0">{
+                                        ep.Metadata = string(data)
+                                }</span>
+                        case string:<span class="cov0" title="0">
+                                ep.Metadata = v</span>
+                        }
+                }
+
+                <span class="cov8" title="1">episodes = append(episodes, ep)</span>
+        }
+
+        <span class="cov8" title="1">if err := rows.Err(); err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+
+        <span class="cov8" title="1">return episodes, nil</span>
+}
+</pre>
+		
+		<pre class="file" id="file1" style="display: none">package embedding
+
+import (
+        "bytes"
+        "context"
+        "encoding/json"
+        "fmt"
+        "io"
+        "net/http"
+        "time"
+)
+
+// Client handles communication with Ollama for embeddings
+type Client struct {
+        baseURL string
+        model   string
+        client  *http.Client
+}
+
+// NewClient creates a new Ollama embedding client
+func NewClient(baseURL, model string) *Client <span class="cov8" title="1">{
+        return &amp;Client{
+                baseURL: baseURL,
+                model:   model,
+                client: &amp;http.Client{
+                        Timeout: 30 * time.Second,
+                },
+        }
+}</span>
+
+// embedRequest matches OpenAI-compatible API format
+type embedRequest struct {
+        Model string `json:"model"`
+        Input string `json:"input"`
+}
+
+// embedResponse matches OpenAI-compatible API format
+type embedResponse struct {
+        Data []struct {
+                Embedding []float32 `json:"embedding"`
+        } `json:"data"`
+}
+
+// Generate creates an embedding for the given text
+func (c *Client) Generate(ctx context.Context, text string) ([]float32, error) <span class="cov8" title="1">{
+        reqBody := embedRequest{
+                Model: c.model,
+                Input: text,
+        }
+
+        jsonData, err := json.Marshal(reqBody)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to marshal request: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">url := fmt.Sprintf("%s/v1/embeddings", c.baseURL)
+        req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to create request: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">req.Header.Set("Content-Type", "application/json")
+
+        resp, err := c.client.Do(req)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("failed to call embedding API: %w", err)
+        }</span>
+        <span class="cov8" title="1">defer resp.Body.Close()
+
+        if resp.StatusCode != http.StatusOK </span><span class="cov8" title="1">{
+                body, _ := io.ReadAll(resp.Body)
+                return nil, fmt.Errorf("embedding API returned status %d: %s", resp.StatusCode, string(body))
+        }</span>
+
+        <span class="cov8" title="1">var embedResp embedResponse
+        if err := json.NewDecoder(resp.Body).Decode(&amp;embedResp); err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("failed to decode response: %w", err)
+        }</span>
+
+        <span class="cov8" title="1">if len(embedResp.Data) == 0 </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("no embeddings returned")
+        }</span>
+
+        <span class="cov8" title="1">return embedResp.Data[0].Embedding, nil</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

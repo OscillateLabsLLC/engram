@@ -18,13 +18,16 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Install dependencies
-        run: go mod download
+      - name: Install just
+        uses: extractions/setup-just@v3
 
-      - name: Run tests
+      - name: Install dependencies
+        run: just deps
+
+      - name: Run tests with coverage
         env:
           CGO_ENABLED: "1"
-        run: go test -v ./...
+        run: just test-coverage
 
       - name: Run go vet
         run: go vet ./...
