@@ -101,20 +101,43 @@ func (s *Store) migrate() error {
 	}
 
 	// If it's still TIMESTAMP (not TIMESTAMP WITH TIME ZONE), migrate
+	// Use table recreation approach to avoid DuckDB dependency issues
 	if colType == "TIMESTAMP" {
 		fmt.Fprintf(os.Stderr, "Migrating timestamp columns to TIMESTAMPTZ...\n")
 
 		migrations := []string{
-			// Drop indexes that depend on timestamp columns
-			"DROP INDEX IF EXISTS idx_episodes_created_at",
-			"DROP INDEX IF EXISTS idx_episodes_valid_at",
-			// Alter column types
-			"ALTER TABLE episodes ALTER COLUMN created_at TYPE TIMESTAMPTZ",
-			"ALTER TABLE episodes ALTER COLUMN valid_at TYPE TIMESTAMPTZ",
-			"ALTER TABLE episodes ALTER COLUMN expired_at TYPE TIMESTAMPTZ",
+			// Create new table with correct schema
+			`CREATE TABLE episodes_new (
+				id VARCHAR PRIMARY KEY,
+				content TEXT NOT NULL,
+				name VARCHAR,
+				source VARCHAR NOT NULL,
+				source_model VARCHAR,
+				source_description TEXT,
+				group_id VARCHAR DEFAULT 'default',
+				tags VARCHAR[],
+				embedding FLOAT[768],
+				created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+				valid_at TIMESTAMPTZ,
+				expired_at TIMESTAMPTZ,
+				metadata JSON
+			)`,
+			// Copy data, casting timestamps
+			`INSERT INTO episodes_new 
+				SELECT id, content, name, source, source_model, source_description,
+				       group_id, tags, embedding,
+				       created_at::TIMESTAMPTZ, valid_at::TIMESTAMPTZ, expired_at::TIMESTAMPTZ,
+				       metadata
+				FROM episodes`,
+			// Drop old table (this also drops its indexes)
+			`DROP TABLE episodes`,
+			// Rename new table
+			`ALTER TABLE episodes_new RENAME TO episodes`,
 			// Recreate indexes
-			"CREATE INDEX idx_episodes_created_at ON episodes (created_at DESC)",
-			"CREATE INDEX idx_episodes_valid_at ON episodes (valid_at)",
+			`CREATE INDEX idx_episodes_created_at ON episodes (created_at DESC)`,
+			`CREATE INDEX idx_episodes_group_id ON episodes (group_id)`,
+			`CREATE INDEX idx_episodes_valid_at ON episodes (valid_at)`,
+			`CREATE INDEX idx_episodes_source ON episodes (source)`,
 		}
 
 		for _, migration := range migrations {
