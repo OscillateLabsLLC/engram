@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/OscillateLabsLLC/engram/compare/v1.2.1...v1.2.2) (2026-02-17)
+
+
+### Bug Fixes
+
+* better migration path ([1c88165](https://github.com/OscillateLabsLLC/engram/commit/1c88165b54f597f09503afc2e422e9eb23bfcd21))
+
 ## [1.2.1](https://github.com/OscillateLabsLLC/engram/compare/v1.2.0...v1.2.1) (2026-02-17)
 
 
