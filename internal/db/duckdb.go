@@ -53,9 +53,9 @@ func (s *Store) initialize() error {
 			group_id VARCHAR DEFAULT 'default',
 			tags VARCHAR[],
 			embedding FLOAT[768],
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			valid_at TIMESTAMP,
-			expired_at TIMESTAMP,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			valid_at TIMESTAMPTZ,
+			expired_at TIMESTAMPTZ,
 			metadata JSON
 		);
 
@@ -72,9 +72,52 @@ func (s *Store) initialize() error {
 		return fmt.Errorf("failed to execute schema: %w", err)
 	}
 
+	// Run migrations for existing databases
+	if err := s.migrate(); err != nil {
+		return fmt.Errorf("failed to run migrations: %w", err)
+	}
+
 	// Try to create HNSW index (will fail if already exists, which is fine)
 	// Note: VSS extension syntax may vary, this is a placeholder
 	_, _ = s.db.Exec("CREATE INDEX IF NOT EXISTS idx_episodes_embedding ON episodes USING HNSW (embedding)")
+
+	return nil
+}
+
+// migrate handles schema migrations for existing databases
+func (s *Store) migrate() error {
+	// Migration 1: TIMESTAMP -> TIMESTAMPTZ for timezone-aware comparisons
+	// Check if columns need migration by querying the schema
+	var colType string
+	err := s.db.QueryRow(`
+		SELECT data_type 
+		FROM information_schema.columns 
+		WHERE table_name = 'episodes' AND column_name = 'created_at'
+	`).Scan(&colType)
+
+	if err != nil {
+		// Table might not exist yet or other error - skip migration
+		return nil
+	}
+
+	// If it's still TIMESTAMP (not TIMESTAMP WITH TIME ZONE), migrate
+	if colType == "TIMESTAMP" {
+		fmt.Fprintf(os.Stderr, "Migrating timestamp columns to TIMESTAMPTZ...\n")
+
+		migrations := []string{
+			"ALTER TABLE episodes ALTER COLUMN created_at TYPE TIMESTAMPTZ",
+			"ALTER TABLE episodes ALTER COLUMN valid_at TYPE TIMESTAMPTZ",
+			"ALTER TABLE episodes ALTER COLUMN expired_at TYPE TIMESTAMPTZ",
+		}
+
+		for _, migration := range migrations {
+			if _, err := s.db.Exec(migration); err != nil {
+				return fmt.Errorf("migration failed: %w", err)
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "Migration complete.\n")
+	}
 
 	return nil
 }
@@ -284,10 +327,6 @@ func (s *Store) UpdateEpisode(ctx context.Context, id string, params models.Upda
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE episodes SET %s WHERE id = ?", strings.Join(updates, ", "))
 
-	// Debug logging
-	fmt.Fprintf(os.Stderr, "DEBUG UPDATE: query=%s\n", query)
-	fmt.Fprintf(os.Stderr, "DEBUG UPDATE: args=%+v\n", args)
-
 	result, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to update episode: %w", err)
@@ -343,24 +382,45 @@ func (s *Store) scanEpisode(row *sql.Row) (*models.Episode, error) {
 		return nil, err
 	}
 
-	// Parse tags - DuckDB returns JSON as string
+	// Parse tags - DuckDB returns VARCHAR[] as []interface{}
 	if tagsRaw != nil {
-		if tagsStr, ok := tagsRaw.(string); ok && tagsStr != "" {
-			json.Unmarshal([]byte(tagsStr), &ep.Tags)
+		switch v := tagsRaw.(type) {
+		case []interface{}:
+			ep.Tags = make([]string, len(v))
+			for i, tag := range v {
+				if s, ok := tag.(string); ok {
+					ep.Tags[i] = s
+				}
+			}
+		case []string:
+			ep.Tags = v
 		}
 	}
 
-	// Parse embedding - DuckDB returns JSON as string
+	// Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
 	if embeddingRaw != nil {
-		if embStr, ok := embeddingRaw.(string); ok && embStr != "" {
-			json.Unmarshal([]byte(embStr), &ep.Embedding)
+		switch v := embeddingRaw.(type) {
+		case []interface{}:
+			ep.Embedding = make([]float32, len(v))
+			for i, val := range v {
+				if f, ok := val.(float32); ok {
+					ep.Embedding[i] = f
+				}
+			}
+		case []float32:
+			ep.Embedding = v
 		}
 	}
 
-	// Metadata is JSON string
+	// Metadata - DuckDB returns JSON as map[string]interface{}, need to re-encode
 	if metadataRaw != nil {
-		if metaStr, ok := metadataRaw.(string); ok {
-			ep.Metadata = metaStr
+		switch v := metadataRaw.(type) {
+		case map[string]interface{}:
+			if data, err := json.Marshal(v); err == nil {
+				ep.Metadata = string(data)
+			}
+		case string:
+			ep.Metadata = v
 		}
 	}
 
@@ -382,24 +442,45 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) {
 			return nil, err
 		}
 
-		// Parse tags - DuckDB returns JSON as string
+		// Parse tags - DuckDB returns VARCHAR[] as []interface{}
 		if tagsRaw != nil {
-			if tagsStr, ok := tagsRaw.(string); ok && tagsStr != "" {
-				json.Unmarshal([]byte(tagsStr), &ep.Tags)
+			switch v := tagsRaw.(type) {
+			case []interface{}:
+				ep.Tags = make([]string, len(v))
+				for i, tag := range v {
+					if s, ok := tag.(string); ok {
+						ep.Tags[i] = s
+					}
+				}
+			case []string:
+				ep.Tags = v
 			}
 		}
 
-		// Parse embedding - DuckDB returns JSON as string
+		// Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
 		if embeddingRaw != nil {
-			if embStr, ok := embeddingRaw.(string); ok && embStr != "" {
-				json.Unmarshal([]byte(embStr), &ep.Embedding)
+			switch v := embeddingRaw.(type) {
+			case []interface{}:
+				ep.Embedding = make([]float32, len(v))
+				for i, val := range v {
+					if f, ok := val.(float32); ok {
+						ep.Embedding[i] = f
+					}
+				}
+			case []float32:
+				ep.Embedding = v
 			}
 		}
 
-		// Metadata is JSON string
+		// Metadata - DuckDB returns JSON as map[string]interface{}, need to re-encode
 		if metadataRaw != nil {
-			if metaStr, ok := metadataRaw.(string); ok {
-				ep.Metadata = metaStr
+			switch v := metadataRaw.(type) {
+			case map[string]interface{}:
+				if data, err := json.Marshal(v); err == nil {
+					ep.Metadata = string(data)
+				}
+			case string:
+				ep.Metadata = v
 			}
 		}
 

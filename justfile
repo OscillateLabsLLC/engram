@@ -38,10 +38,11 @@ clean:
 test:
     go test -v ./...
 
-# Run tests with coverage
+# Run tests with coverage (excludes cmd/mcp/api - deliberate non-test packages)
 test-coverage:
-    go test -v -coverprofile=coverage.out ./...
+    go test -v -coverprofile=coverage.out -coverpkg=./internal/db,./internal/embedding ./...
     go tool cover -html=coverage.out -o coverage.html
+    go tool cover -func=coverage.out | tail -5
     @echo "Coverage report: coverage.html"
 
 # Install/update dependencies
@@ -56,6 +57,10 @@ fmt:
 # Lint code (requires golangci-lint)
 lint:
     golangci-lint run
+
+# Run go vet
+vet:
+    go vet ./...
 
 # Run engram locally for development
 dev:
