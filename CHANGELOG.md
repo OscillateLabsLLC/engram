@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/OscillateLabsLLC/engram/compare/v1.2.0...v1.2.1) (2026-02-17)
+
+
+### Bug Fixes
+
+* recreate indexes on migration ([851a76c](https://github.com/OscillateLabsLLC/engram/commit/851a76c77787fbdb50279e3c69ff5e2a1af772ec))
+
 ## [1.2.0](https://github.com/OscillateLabsLLC/engram/compare/v1.1.1...v1.2.0) (2026-02-17)
 
 
