@@ -1,0 +1,28 @@
+# Docker Compose for Mac/Windows
+# Connects to Ollama running on the host machine
+
+services:
+  engram:
+    build: .
+    container_name: engram
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - engram-data:/data
+    environment:
+      - DUCKDB_PATH=/data/engram.duckdb
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - EMBEDDING_MODEL=nomic-embed-text
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - engram-network
+
+volumes:
+  engram-data:
+    driver: local
+
+networks:
+  engram-network:
+    driver: bridge

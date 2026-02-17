@@ -78,13 +78,40 @@ docker-build-amd64:
     docker buildx build --platform linux/amd64 -t engram:latest-amd64 --load .
     @echo "✅ Docker image built for amd64: engram:latest-amd64"
 
-# Run in Docker
+# Run in Docker (one-off container)
 docker-run:
     docker run -it --rm \
         -e OLLAMA_URL=http://host.docker.internal:11434 \
         -p 8080:8080 \
         -v {{justfile_directory()}}/data:/data \
         engram:latest
+
+# Start with Docker Compose (Mac/Windows)
+docker-up:
+    docker compose up -d
+    @echo "✅ Engram started on http://localhost:8080"
+    @echo "View logs: just docker-logs"
+
+# Start with Docker Compose on Linux
+docker-up-linux:
+    docker compose -f docker-compose.linux.yml up -d
+    @echo "✅ Engram started on http://localhost:8080"
+    @echo "View logs: just docker-logs"
+
+# Stop Docker Compose services
+docker-down:
+    docker compose down
+    docker compose -f docker-compose.linux.yml down 2>/dev/null || true
+    @echo "✅ Engram stopped"
+
+# View Docker Compose logs
+docker-logs:
+    docker compose logs -f engram
+
+# Restart Docker Compose services
+docker-restart:
+    @just docker-down
+    @just docker-up
 
 # Check if Ollama is running
 check-ollama:
