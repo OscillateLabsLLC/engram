@@ -105,14 +105,21 @@ func (s *Store) migrate() error {
 		fmt.Fprintf(os.Stderr, "Migrating timestamp columns to TIMESTAMPTZ...\n")
 
 		migrations := []string{
+			// Drop indexes that depend on timestamp columns
+			"DROP INDEX IF EXISTS idx_episodes_created_at",
+			"DROP INDEX IF EXISTS idx_episodes_valid_at",
+			// Alter column types
 			"ALTER TABLE episodes ALTER COLUMN created_at TYPE TIMESTAMPTZ",
 			"ALTER TABLE episodes ALTER COLUMN valid_at TYPE TIMESTAMPTZ",
 			"ALTER TABLE episodes ALTER COLUMN expired_at TYPE TIMESTAMPTZ",
+			// Recreate indexes
+			"CREATE INDEX idx_episodes_created_at ON episodes (created_at DESC)",
+			"CREATE INDEX idx_episodes_valid_at ON episodes (valid_at)",
 		}
 
 		for _, migration := range migrations {
 			if _, err := s.db.Exec(migration); err != nil {
-				return fmt.Errorf("migration failed: %w", err)
+				return fmt.Errorf("migration failed (%s): %w", migration, err)
 			}
 		}
 
