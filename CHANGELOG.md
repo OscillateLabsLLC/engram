@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.3](https://github.com/OscillateLabsLLC/engram/compare/v1.2.2...v1.2.3) (2026-03-01)
+
+
+### Bug Fixes
+
+* better direction for smaller models ([c9d3a12](https://github.com/OscillateLabsLLC/engram/commit/c9d3a12e6edb645b4a38ecae426a361391f2a622))
+* don't return embeddings on memory search ([f02b223](https://github.com/OscillateLabsLLC/engram/commit/f02b2233e4edbb1f5e3b4c850c6b755607b7e72c))
+* don't return embeddings on memory search ([c9d3a12](https://github.com/OscillateLabsLLC/engram/commit/c9d3a12e6edb645b4a38ecae426a361391f2a622))
+
 ## [1.2.2](https://github.com/OscillateLabsLLC/engram/compare/v1.2.1...v1.2.2) (2026-02-17)
 
 
