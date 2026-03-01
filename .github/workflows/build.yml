@@ -52,7 +52,7 @@ jobs:
         run: go build -v -o engram${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./cmd/engram/main.go
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: engram-${{ matrix.os }}
           path: |
