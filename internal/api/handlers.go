@@ -119,7 +119,8 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return created episode
+	// Return created episode (strip embedding — internal use only)
+	episode.Embedding = nil
 	successResponse(w, map[string]interface{}{
 		"success":  true,
 		"episode":  episode,

@@ -55,7 +55,7 @@
 			<div id="nav">
 				<select id="files">
 				
-				<option value="file0">github.com/oscillatelabsllc/engram/internal/db/duckdb.go (82.5%)</option>
+				<option value="file0">github.com/oscillatelabsllc/engram/internal/db/duckdb.go (79.2%)</option>
 				
 				<option value="file1">github.com/oscillatelabsllc/engram/internal/embedding/client.go (91.3%)</option>
 				
@@ -145,11 +145,84 @@ func (s *Store) initialize() error <span class="cov8" title="1">{
                 return fmt.Errorf("failed to execute schema: %w", err)
         }</span>
 
+        // Run migrations for existing databases
+        <span class="cov8" title="1">if err := s.migrate(); err != nil </span><span class="cov0" title="0">{
+                return fmt.Errorf("failed to run migrations: %w", err)
+        }</span>
+
         // Try to create HNSW index (will fail if already exists, which is fine)
         // Note: VSS extension syntax may vary, this is a placeholder
         <span class="cov8" title="1">_, _ = s.db.Exec("CREATE INDEX IF NOT EXISTS idx_episodes_embedding ON episodes USING HNSW (embedding)")
 
         return nil</span>
+}
+
+// migrate handles schema migrations for existing databases
+func (s *Store) migrate() error <span class="cov8" title="1">{
+        // Migration 1: TIMESTAMP -&gt; TIMESTAMPTZ for timezone-aware comparisons
+        // Check if columns need migration by querying the schema
+        var colType string
+        err := s.db.QueryRow(`
+                SELECT data_type 
+                FROM information_schema.columns 
+                WHERE table_name = 'episodes' AND column_name = 'created_at'
+        `).Scan(&amp;colType)
+
+        if err != nil </span><span class="cov0" title="0">{
+                // Table might not exist yet or other error - skip migration
+                return nil
+        }</span>
+
+        // If it's still TIMESTAMP (not TIMESTAMP WITH TIME ZONE), migrate
+        // Use table recreation approach to avoid DuckDB dependency issues
+        <span class="cov8" title="1">if colType == "TIMESTAMP" </span><span class="cov0" title="0">{
+                fmt.Fprintf(os.Stderr, "Migrating timestamp columns to TIMESTAMPTZ...\n")
+
+                migrations := []string{
+                        // Create new table with correct schema
+                        `CREATE TABLE episodes_new (
+                                id VARCHAR PRIMARY KEY,
+                                content TEXT NOT NULL,
+                                name VARCHAR,
+                                source VARCHAR NOT NULL,
+                                source_model VARCHAR,
+                                source_description TEXT,
+                                group_id VARCHAR DEFAULT 'default',
+                                tags VARCHAR[],
+                                embedding FLOAT[768],
+                                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                                valid_at TIMESTAMPTZ,
+                                expired_at TIMESTAMPTZ,
+                                metadata JSON
+                        )`,
+                        // Copy data, casting timestamps
+                        `INSERT INTO episodes_new 
+                                SELECT id, content, name, source, source_model, source_description,
+                                       group_id, tags, embedding,
+                                       created_at::TIMESTAMPTZ, valid_at::TIMESTAMPTZ, expired_at::TIMESTAMPTZ,
+                                       metadata
+                                FROM episodes`,
+                        // Drop old table (this also drops its indexes)
+                        `DROP TABLE episodes`,
+                        // Rename new table
+                        `ALTER TABLE episodes_new RENAME TO episodes`,
+                        // Recreate indexes
+                        `CREATE INDEX idx_episodes_created_at ON episodes (created_at DESC)`,
+                        `CREATE INDEX idx_episodes_group_id ON episodes (group_id)`,
+                        `CREATE INDEX idx_episodes_valid_at ON episodes (valid_at)`,
+                        `CREATE INDEX idx_episodes_source ON episodes (source)`,
+                }
+
+                for _, migration := range migrations </span><span class="cov0" title="0">{
+                        if _, err := s.db.Exec(migration); err != nil </span><span class="cov0" title="0">{
+                                return fmt.Errorf("migration failed (%s): %w", migration, err)
+                        }</span>
+                }
+
+                <span class="cov0" title="0">fmt.Fprintf(os.Stderr, "Migration complete.\n")</span>
+        }
+
+        <span class="cov8" title="1">return nil</span>
 }
 
 // InsertEpisode adds a new episode to the store
@@ -215,10 +288,10 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
         var args []interface{}
         argIdx := 1
 
-        // Base query - includes embedding for potential similarity calculation
+        // Base query - embedding is excluded from SELECT (used only for ORDER BY scoring)
         query := `
                 SELECT id, content, name, source, source_model, source_description,
-                       group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+                       group_id, tags, created_at, valid_at, expired_at, metadata
                 FROM episodes
                 WHERE 1=1
         `
@@ -311,7 +384,7 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 func (s *Store) GetEpisode(ctx context.Context, id string) (*models.Episode, error) <span class="cov8" title="1">{
         query := `
                 SELECT id, content, name, source, source_model, source_description,
-                       group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+                       group_id, tags, created_at, valid_at, expired_at, metadata
                 FROM episodes
                 WHERE id = ?
         `
@@ -402,11 +475,11 @@ func (s *Store) Close() error <span class="cov8" title="1">{
 
 func (s *Store) scanEpisode(row *sql.Row) (*models.Episode, error) <span class="cov8" title="1">{
         var ep models.Episode
-        var tagsRaw, embeddingRaw, metadataRaw interface{}
+        var tagsRaw, metadataRaw interface{}
 
         err := row.Scan(
                 &amp;ep.ID, &amp;ep.Content, &amp;ep.Name, &amp;ep.Source, &amp;ep.SourceModel, &amp;ep.SourceDescription,
-                &amp;ep.GroupID, &amp;tagsRaw, &amp;embeddingRaw, &amp;ep.CreatedAt, &amp;ep.ValidAt, &amp;ep.ExpiredAt, &amp;metadataRaw,
+                &amp;ep.GroupID, &amp;tagsRaw, &amp;ep.CreatedAt, &amp;ep.ValidAt, &amp;ep.ExpiredAt, &amp;metadataRaw,
         )
         if err != nil </span><span class="cov8" title="1">{
                 return nil, err
@@ -424,21 +497,6 @@ func (s *Store) scanEpisode(row *sql.Row) (*models.Episode, error) <span class="
                         }
                 case []string:<span class="cov0" title="0">
                         ep.Tags = v</span>
-                }
-        }
-
-        // Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
-        <span class="cov8" title="1">if embeddingRaw != nil </span><span class="cov8" title="1">{
-                switch v := embeddingRaw.(type) </span>{
-                case []interface{}:<span class="cov8" title="1">
-                        ep.Embedding = make([]float32, len(v))
-                        for i, val := range v </span><span class="cov8" title="1">{
-                                if f, ok := val.(float32); ok </span><span class="cov8" title="1">{
-                                        ep.Embedding[i] = f
-                                }</span>
-                        }
-                case []float32:<span class="cov0" title="0">
-                        ep.Embedding = v</span>
                 }
         }
 
@@ -462,11 +520,11 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) <span cla
 
         for rows.Next() </span><span class="cov8" title="1">{
                 var ep models.Episode
-                var tagsRaw, embeddingRaw, metadataRaw interface{}
+                var tagsRaw, metadataRaw interface{}
 
                 err := rows.Scan(
                         &amp;ep.ID, &amp;ep.Content, &amp;ep.Name, &amp;ep.Source, &amp;ep.SourceModel, &amp;ep.SourceDescription,
-                        &amp;ep.GroupID, &amp;tagsRaw, &amp;embeddingRaw, &amp;ep.CreatedAt, &amp;ep.ValidAt, &amp;ep.ExpiredAt, &amp;metadataRaw,
+                        &amp;ep.GroupID, &amp;tagsRaw, &amp;ep.CreatedAt, &amp;ep.ValidAt, &amp;ep.ExpiredAt, &amp;metadataRaw,
                 )
                 if err != nil </span><span class="cov0" title="0">{
                         return nil, err
@@ -484,21 +542,6 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) <span cla
                                 }
                         case []string:<span class="cov0" title="0">
                                 ep.Tags = v</span>
-                        }
-                }
-
-                // Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
-                <span class="cov8" title="1">if embeddingRaw != nil </span><span class="cov8" title="1">{
-                        switch v := embeddingRaw.(type) </span>{
-                        case []interface{}:<span class="cov8" title="1">
-                                ep.Embedding = make([]float32, len(v))
-                                for i, val := range v </span><span class="cov8" title="1">{
-                                        if f, ok := val.(float32); ok </span><span class="cov8" title="1">{
-                                                ep.Embedding[i] = f
-                                        }</span>
-                                }
-                        case []float32:<span class="cov0" title="0">
-                                ep.Embedding = v</span>
                         }
                 }
 

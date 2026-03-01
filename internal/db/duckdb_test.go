@@ -132,9 +132,9 @@ func TestInsertEpisode(t *testing.T) {
 			t.Errorf("ValidAt: got %v, want %v", retrieved.ValidAt, validAt)
 		}
 
-		// Embedding
-		if len(retrieved.Embedding) != len(embedding) {
-			t.Fatalf("Embedding length: got %d, want %d", len(retrieved.Embedding), len(embedding))
+		// Embedding is stored in the DB for semantic search but never returned in query results
+		if retrieved.Embedding != nil {
+			t.Errorf("Embedding should not be returned in query results, got %d floats", len(retrieved.Embedding))
 		}
 	})
 }
