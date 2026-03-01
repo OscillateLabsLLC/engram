@@ -60,7 +60,7 @@ func (s *Server) registerTools() {
 				},
 				"source": map[string]interface{}{
 					"type":        "string",
-					"description": "Source client (e.g., 'claude-desktop', 'claude-code')",
+					"description": "Identifier for what created this memory (e.g., 'claude-desktop', 'claude-code', 'my-app'). Use a consistent value per client so you can filter by it later.",
 				},
 				"source_model": map[string]interface{}{
 					"type":        "string",
@@ -72,7 +72,7 @@ func (s *Server) registerTools() {
 				},
 				"group_id": map[string]interface{}{
 					"type":        "string",
-					"description": "Group ID for multi-tenant support (default: 'default')",
+					"description": "Advanced: namespace for multi-tenant isolation. Omit this in almost all cases — the server assigns a default automatically. Only set if you are deliberately partitioning memories between separate users or contexts.",
 				},
 				"tags": map[string]interface{}{
 					"type": "array",
@@ -97,44 +97,44 @@ func (s *Server) registerTools() {
 	// search tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "search",
-		Description: "Search episodes using semantic similarity, temporal, and tag filters",
+		Description: "Search episodes using semantic similarity, temporal, and tag filters. For most searches, only provide 'query'. All other parameters are optional secondary filters — omit them unless you have a specific reason to narrow results.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
 				"query": map[string]interface{}{
 					"type":        "string",
-					"description": "Text to search for (will be embedded)",
-				},
-				"group_id": map[string]interface{}{
-					"type":        "string",
-					"description": "Filter by group ID",
+					"description": "Natural language text to search for. The system handles semantic matching automatically — just describe what you're looking for.",
 				},
 				"max_results": map[string]interface{}{
 					"type":        "integer",
-					"description": "Maximum number of results (default: 10)",
+					"description": "Maximum number of results to return (default: 10)",
 				},
 				"before": map[string]interface{}{
 					"type":        "string",
-					"description": "Episodes created before this time (ISO 8601)",
+					"description": "Only return episodes created before this time (ISO 8601). Optional.",
 				},
 				"after": map[string]interface{}{
 					"type":        "string",
-					"description": "Episodes created after this time (ISO 8601)",
+					"description": "Only return episodes created after this time (ISO 8601). Optional.",
 				},
 				"tags": map[string]interface{}{
 					"type": "array",
 					"items": map[string]interface{}{
 						"type": "string",
 					},
-					"description": "Filter by tags (AND logic)",
+					"description": "Narrow results to episodes that have ALL of these tags. Only use if you know specific tags were stored. Optional.",
 				},
 				"source": map[string]interface{}{
 					"type":        "string",
-					"description": "Filter by source client",
+					"description": "Advanced filter: narrow results to a specific source client (e.g., 'claude-desktop'). Omit this in almost all cases — it will exclude memories from other sources. Only use if you need results from one specific client.",
+				},
+				"group_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Advanced filter: narrow results to a specific group namespace. Omit this in almost all cases — it will exclude memories stored under other group IDs. Only use if you deliberately stored memories under a specific group.",
 				},
 				"include_expired": map[string]interface{}{
 					"type":        "boolean",
-					"description": "Include expired episodes (default: false)",
+					"description": "Include episodes that have been marked as expired (default: false). Optional.",
 				},
 			},
 			Required: []string{},
@@ -144,25 +144,25 @@ func (s *Server) registerTools() {
 	// get_episodes tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "get_episodes",
-		Description: "Retrieve episodes by time range, source, or group",
+		Description: "Retrieve recent episodes in chronological order. All parameters are optional — call with no arguments to get the most recent episodes.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
-				"group_id": map[string]interface{}{
-					"type":        "string",
-					"description": "Filter by group ID",
-				},
 				"max_results": map[string]interface{}{
 					"type":        "integer",
-					"description": "Maximum number of results (default: 10)",
+					"description": "Maximum number of episodes to return (default: 10)",
 				},
 				"before": map[string]interface{}{
 					"type":        "string",
-					"description": "Episodes created before this time (ISO 8601)",
+					"description": "Only return episodes created before this time (ISO 8601). Optional.",
 				},
 				"after": map[string]interface{}{
 					"type":        "string",
-					"description": "Episodes created after this time (ISO 8601)",
+					"description": "Only return episodes created after this time (ISO 8601). Optional.",
+				},
+				"group_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Advanced filter: narrow results to a specific group namespace. Omit this in almost all cases — it will exclude memories stored under other group IDs. Only use if you deliberately stored memories under a specific group.",
 				},
 			},
 			Required: []string{},

@@ -215,10 +215,10 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 	var args []interface{}
 	argIdx := 1
 
-	// Base query - includes embedding for potential similarity calculation
+	// Base query - embedding is excluded from SELECT (used only for ORDER BY scoring)
 	query := `
 		SELECT id, content, name, source, source_model, source_description,
-		       group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+		       group_id, tags, created_at, valid_at, expired_at, metadata
 		FROM episodes
 		WHERE 1=1
 	`
@@ -311,7 +311,7 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 func (s *Store) GetEpisode(ctx context.Context, id string) (*models.Episode, error) {
 	query := `
 		SELECT id, content, name, source, source_model, source_description,
-		       group_id, tags, embedding, created_at, valid_at, expired_at, metadata
+		       group_id, tags, created_at, valid_at, expired_at, metadata
 		FROM episodes
 		WHERE id = ?
 	`
@@ -402,11 +402,11 @@ func (s *Store) Close() error {
 
 func (s *Store) scanEpisode(row *sql.Row) (*models.Episode, error) {
 	var ep models.Episode
-	var tagsRaw, embeddingRaw, metadataRaw interface{}
+	var tagsRaw, metadataRaw interface{}
 
 	err := row.Scan(
 		&ep.ID, &ep.Content, &ep.Name, &ep.Source, &ep.SourceModel, &ep.SourceDescription,
-		&ep.GroupID, &tagsRaw, &embeddingRaw, &ep.CreatedAt, &ep.ValidAt, &ep.ExpiredAt, &metadataRaw,
+		&ep.GroupID, &tagsRaw, &ep.CreatedAt, &ep.ValidAt, &ep.ExpiredAt, &metadataRaw,
 	)
 	if err != nil {
 		return nil, err
@@ -424,21 +424,6 @@ func (s *Store) scanEpisode(row *sql.Row) (*models.Episode, error) {
 			}
 		case []string:
 			ep.Tags = v
-		}
-	}
-
-	// Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
-	if embeddingRaw != nil {
-		switch v := embeddingRaw.(type) {
-		case []interface{}:
-			ep.Embedding = make([]float32, len(v))
-			for i, val := range v {
-				if f, ok := val.(float32); ok {
-					ep.Embedding[i] = f
-				}
-			}
-		case []float32:
-			ep.Embedding = v
 		}
 	}
 
@@ -462,11 +447,11 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) {
 
 	for rows.Next() {
 		var ep models.Episode
-		var tagsRaw, embeddingRaw, metadataRaw interface{}
+		var tagsRaw, metadataRaw interface{}
 
 		err := rows.Scan(
 			&ep.ID, &ep.Content, &ep.Name, &ep.Source, &ep.SourceModel, &ep.SourceDescription,
-			&ep.GroupID, &tagsRaw, &embeddingRaw, &ep.CreatedAt, &ep.ValidAt, &ep.ExpiredAt, &metadataRaw,
+			&ep.GroupID, &tagsRaw, &ep.CreatedAt, &ep.ValidAt, &ep.ExpiredAt, &metadataRaw,
 		)
 		if err != nil {
 			return nil, err
@@ -484,21 +469,6 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) {
 				}
 			case []string:
 				ep.Tags = v
-			}
-		}
-
-		// Parse embedding - DuckDB returns FLOAT[] as []interface{} with float32 elements
-		if embeddingRaw != nil {
-			switch v := embeddingRaw.(type) {
-			case []interface{}:
-				ep.Embedding = make([]float32, len(v))
-				for i, val := range v {
-					if f, ok := val.(float32); ok {
-						ep.Embedding[i] = f
-					}
-				}
-			case []float32:
-				ep.Embedding = v
 			}
 		}
 
