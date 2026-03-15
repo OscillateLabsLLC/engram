@@ -17,9 +17,10 @@ import (
 
 // Store wraps DuckDB operations
 type Store struct {
-	db       *sql.DB
-	ftsStale bool
-	ftsMu    sync.Mutex
+	db           *sql.DB
+	ftsStale     bool
+	ftsAvailable bool
+	ftsMu        sync.Mutex
 }
 
 // NewStore creates a new DuckDB store
@@ -89,18 +90,33 @@ func (s *Store) initialize() error {
 	// Note: VSS extension syntax may vary, this is a placeholder
 	_, _ = s.db.Exec("CREATE INDEX IF NOT EXISTS idx_episodes_embedding ON episodes USING HNSW (embedding)")
 
-	// Install and load FTS extension for full-text search
+	// Install and load FTS extension for full-text search.
+	// INSTALL downloads the extension; LOAD may fail if the file isn't flushed yet
+	// (observed in CI), so we retry LOAD once after a brief pause.
+	// Non-fatal: keyword/hybrid search degrade gracefully if FTS is unavailable.
 	if _, err := s.db.Exec("INSTALL fts"); err != nil {
-		return fmt.Errorf("failed to install FTS extension: %w", err)
+		fmt.Fprintf(os.Stderr, "Warning: FTS extension install failed (keyword/hybrid search unavailable): %v\n", err)
+	} else if err := s.loadFTSWithRetry(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: FTS extension load failed (keyword/hybrid search unavailable): %v\n", err)
+	} else {
+		s.ftsAvailable = true
+		s.ftsStale = true
 	}
-	if _, err := s.db.Exec("LOAD fts"); err != nil {
-		return fmt.Errorf("failed to load FTS extension: %w", err)
-	}
-
-	// Mark FTS index as stale so it gets built on first FTS search
-	s.ftsStale = true
 
 	return nil
+}
+
+// loadFTSWithRetry attempts to LOAD the FTS extension, retrying once after a
+// short pause if the first attempt fails. This handles a race condition where
+// INSTALL downloads the file but it isn't flushed to disk before LOAD runs.
+func (s *Store) loadFTSWithRetry() error {
+	_, err := s.db.Exec("LOAD fts")
+	if err == nil {
+		return nil
+	}
+	time.Sleep(100 * time.Millisecond)
+	_, err = s.db.Exec("LOAD fts")
+	return err
 }
 
 // migrate handles schema migrations for existing databases
@@ -245,6 +261,13 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 	}
 
 	needsFTS := mode == "keyword" || mode == "hybrid"
+
+	// If FTS is needed but unavailable, degrade gracefully
+	if needsFTS && !s.ftsAvailable {
+		fmt.Fprintf(os.Stderr, "Warning: %s search requested but FTS extension unavailable, falling back to vector mode\n", mode)
+		mode = "vector"
+		needsFTS = false
+	}
 
 	// Warn if min_similarity is set but won't be applied
 	if params.MinSimilarity > 0 && mode != "vector" && mode != "" {
