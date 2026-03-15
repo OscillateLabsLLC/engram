@@ -19,12 +19,13 @@ import (
 
 // Server implements the HTTP API server for Engram
 type Server struct {
-	store     *db.Store
-	embedder  *embedding.Client
-	router    *chi.Mux
-	port      string
-	sseServer *server.SSEServer
-	mcpServer *server.MCPServer
+	store      *db.Store
+	embedder   *embedding.Client
+	router     *chi.Mux
+	port       string
+	httpServer *http.Server
+	sseServer  *server.SSEServer
+	mcpServer  *server.MCPServer
 }
 
 // NewServer creates a new HTTP API server
@@ -85,13 +86,27 @@ func (s *Server) setupRouter() {
 	s.router = r
 }
 
-// Serve starts the HTTP server
+// Serve starts the HTTP server. It blocks until the server is shut down.
+// Returns nil on clean shutdown via Shutdown(), or an error on failure.
 func (s *Server) Serve() error {
 	addr := fmt.Sprintf(":%s", s.port)
-	fmt.Printf("Starting HTTP server on %s\n", addr)
-	fmt.Printf("OpenAPI spec available at http://localhost%s/openapi.json\n", addr)
-	fmt.Printf("Health check at http://localhost%s/health\n", addr)
-	return http.ListenAndServe(addr, s.router)
+	s.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: s.router,
+	}
+	err := s.httpServer.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+// Shutdown gracefully shuts down the HTTP server.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.httpServer != nil {
+		return s.httpServer.Shutdown(ctx)
+	}
+	return nil
 }
 
 // handleHealth returns 200 OK if server is running

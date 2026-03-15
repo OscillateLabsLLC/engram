@@ -2,83 +2,173 @@
 
 This guide covers integrating Engram with MCP clients like Claude Desktop, Claude Code, and Cursor.
 
-## Transport Modes
+## Architecture
 
-Engram supports two transport modes:
+Engram uses a server-based architecture. `engram serve` is a persistent process that owns the database and handles all memory operations. MCP clients connect to the server in one of two ways:
 
-1. **stdio** (default) — Local binary execution via command-line
-2. **HTTP/SSE** — Remote server via streaming HTTP (requires deployed server)
+1. **SSE (recommended)** — Clients that support SSE connect directly to the server
+2. **stdio proxy** — Clients that only support stdio spawn `engram stdio`, a thin bridge that proxies to the running server
 
-## stdio Transport (Local)
+This architecture allows multiple MCP clients (Cursor, Claude Desktop, Claude Code) to share the same memory store simultaneously without database locking conflicts.
 
-Use this mode when running Engram locally on the same machine as your MCP client.
+## Quick Start
 
-### Claude Desktop
+### 1. Start the server
 
-Add to your `claude_desktop_config.json` (see [`claude_desktop_config.example.json`](../claude_desktop_config.example.json)):
+Engram needs to run as a background service so it's always available when your MCP clients connect. You only run it once -- all your MCP clients share the same server.
+
+#### macOS (launchd)
+
+Create `~/Library/LaunchAgents/com.engram.server.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.engram.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/engram</string>
+        <string>serve</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DUCKDB_PATH</key>
+        <string>/Users/YOUR_USERNAME/Library/Application Support/Engram/memory.duckdb</string>
+        <key>OLLAMA_URL</key>
+        <string>http://localhost:11434</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/engram.log</string>
+</dict>
+</plist>
+```
+
+Then load it:
+
+```bash
+mkdir -p ~/Library/Application\ Support/Engram
+launchctl load ~/Library/LaunchAgents/com.engram.server.plist
+```
+
+Engram will now start automatically on login. To stop: `launchctl unload ~/Library/LaunchAgents/com.engram.server.plist`
+
+#### Linux (systemd)
+
+Create `~/.config/systemd/user/engram.service`:
+
+```ini
+[Unit]
+Description=Engram Memory Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/engram serve
+Environment=DUCKDB_PATH=%h/.local/share/engram/memory.duckdb
+Environment=OLLAMA_URL=http://localhost:11434
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Then enable it:
+
+```bash
+mkdir -p ~/.local/share/engram
+systemctl --user daemon-reload
+systemctl --user enable --now engram
+```
+
+Check status: `systemctl --user status engram`
+
+#### Windows
+
+See [WINDOWS.md](../WINDOWS.md) for detailed Windows setup including running as a startup task.
+
+#### Manual (any platform)
+
+For testing, just run in a terminal:
+
+```bash
+engram serve
+```
+
+The server starts on port 3490 by default and prints:
+
+```
+MCP SSE endpoint: http://localhost:3490/mcp/sse
+Health check:     http://localhost:3490/health
+```
+
+### 2. Configure your MCP client
+
+#### Cursor
+
+Add to `.cursor/mcp.json` in your project root or `~/.cursor/mcp.json` for global access:
 
 ```json
 {
   "mcpServers": {
-    "engram-memory": {
+    "engram": {
+      "url": "http://localhost:3490/mcp/sse"
+    }
+  }
+}
+```
+
+#### Claude Code
+
+```bash
+claude mcp add engram --transport sse http://localhost:3490/mcp/sse
+```
+
+#### Claude Desktop
+
+Claude Desktop doesn't support SSE directly, so it uses `engram stdio` -- a thin proxy that bridges stdio to the running server:
+
+```json
+{
+  "mcpServers": {
+    "engram": {
       "command": "/absolute/path/to/engram",
-      "args": [],
-      "env": {
-        "DUCKDB_PATH": "/absolute/path/to/engram.duckdb",
-        "OLLAMA_URL": "http://localhost:11434",
-        "EMBEDDING_MODEL": "nomic-embed-text"
-      }
+      "args": ["stdio"]
     }
   }
 }
 ```
 
-> **Tip:** Use absolute paths. On macOS, run `realpath engram` to get the full path.
+> **Tip:** On macOS, run `which engram` to get the full path. The `ENGRAM_SERVER_URL` env var defaults to `http://localhost:3490` -- only set it if your server runs on a different host or port.
 
-For Windows-specific setup, see [WINDOWS.md](../WINDOWS.md).
+#### Other MCP clients
 
-### Claude Code / Cursor
+Any client that supports SSE can connect to `http://localhost:3490/mcp/sse`. Clients that only support stdio can spawn `engram stdio` as a proxy to the running server.
 
-Same MCP server configuration — add it to your project or user settings.
+## Configuration
 
-## HTTP/SSE Transport (Remote)
+### Environment Variables
 
-Use this mode when connecting to a remote Engram server deployed via Docker/Kubernetes.
+| Variable | Default | Description |
+|---|---|---|
+| `DUCKDB_PATH` | `./engram.duckdb` | Path to the DuckDB database file |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server endpoint |
+| `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
+| `ENGRAM_PORT` | `3490` | Server port |
+| `ENGRAM_SERVER_URL` | `http://localhost:3490` | Server URL (used by stdio proxy) |
 
-### Claude Desktop
+### CLI Usage
 
-```json
-{
-  "mcpServers": {
-    "engram-memory": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "supergateway",
-        "--sse",
-        "https://your-engram-server.example.com/mcp/sse"
-      ]
-    }
-  }
-}
 ```
-
-### Cursor
-
-Add to `.cursor/mcp.json` in your project or user settings:
-
-```json
-{
-  "mcpServers": {
-    "engram-memory": {
-      "url": "https://your-engram-server.example.com/mcp/sse",
-      "transport": "streamableHttp"
-    }
-  }
-}
+engram [serve]              # Start HTTP/SSE server (default)
+engram serve --port=3490    # Explicit serve with port override
+engram stdio                # Stdio proxy to running server
 ```
-
-> **Note:** SSE transport requires deploying Engram in HTTP mode. See [deployment.md](deployment.md) for server setup.
 
 ## Verifying the Integration
 
@@ -144,7 +234,24 @@ Health check — returns system status and version.
 
 > **Safety:** Episodes can be marked as expired but cannot be permanently deleted via MCP tools. This prevents accidental memory loss from LLM errors.
 
+## Migration from v1.x
+
+If you're upgrading from v1.x:
+
+1. **Start `engram serve`** as a persistent process (launchd, systemd, or Docker)
+2. **Update MCP client configs** to use either the SSE URL directly or `"args": ["stdio"]`
+3. **Remove `npx supergateway`** from any configs — it's no longer needed
+4. Your existing DuckDB file is unchanged — point `DUCKDB_PATH` to the same file
+
 ## Troubleshooting
+
+### "Cannot connect to engram server"
+
+The stdio proxy prints this when it can't reach the server. Make sure `engram serve` is running:
+
+```bash
+curl http://localhost:3490/health
+```
 
 ### "Command not found"
 

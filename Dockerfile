@@ -30,9 +30,9 @@ ENV OLLAMA_URL=http://localhost:11434
 ENV EMBEDDING_MODEL=nomic-embed-text
 
 # Expose HTTP port
-EXPOSE 8080
+EXPOSE 3490
 
 # Volume for persistent storage
 VOLUME ["/data"]
 
-CMD ["/engram", "-mode", "http", "-port", "8080"]
+CMD ["/engram", "serve"]
