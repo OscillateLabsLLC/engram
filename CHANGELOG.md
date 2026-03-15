@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.2](https://github.com/OscillateLabsLLC/engram/compare/v2.2.1...v2.2.2) (2026-03-15)
+
+
+### Bug Fixes
+
+* add practical search mode guidance to MCP tool descriptions ([0a7c45d](https://github.com/OscillateLabsLLC/engram/commit/0a7c45d1dfc1f8b7240e7844858feb4e90c48c38))
+
 ## [2.2.1](https://github.com/OscillateLabsLLC/engram/compare/v2.2.0...v2.2.1) (2026-03-15)
 
 
