@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/OscillateLabsLLC/engram/compare/v2.1.1...v2.2.0) (2026-03-15)
+
+
+### Features
+
+* add DuckDB FTS extension and hybrid search mode ([fda1cf7](https://github.com/OscillateLabsLLC/engram/commit/fda1cf76ba2e5a1591dfa163e96c7a9d6f4e7713))
+
 ## [2.1.1](https://github.com/OscillateLabsLLC/engram/compare/v2.1.0...v2.1.1) (2026-03-15)
 
 
