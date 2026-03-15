@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/OscillateLabsLLC/engram/compare/v2.1.0...v2.1.1) (2026-03-15)
+
+
+### Bug Fixes
+
+* CI test race and Docker image name casing ([27a50a1](https://github.com/OscillateLabsLLC/engram/commit/27a50a13cc81b6e37bb82d166fd18c94ab007b96))
+
 ## [2.1.0](https://github.com/OscillateLabsLLC/engram/compare/v2.0.0...v2.1.0) (2026-03-15)
 
 
