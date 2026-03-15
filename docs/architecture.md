@@ -60,12 +60,19 @@ CREATE INDEX idx_episodes_source ON episodes (source);
 
 ### Search
 
-- **Semantic:** VSS HNSW index with cosine similarity on embeddings
+Three search modes, selectable via the `search_mode` parameter:
+
+- **Vector (default):** Finds memories by meaning. Uses HNSW vector index with cosine similarity — "deployment preferences" matches memories about CI/CD even without that exact phrase.
+- **Keyword:** Finds memories by exact words. Uses DuckDB's FTS extension (BM25 scoring) on `content` and `name` fields. No embedding required — works even when Ollama is down.
+- **Hybrid:** Combines both approaches with configurable weighting (alpha, default 0.7 favoring semantic). BM25 scores are min-max normalized to [0,1] before combining with cosine similarity.
+
+All modes support additional filters:
+
 - **Temporal:** Filter by `created_at`, `valid_at`, `expired_at` ranges
 - **Tag-based:** List containment queries
 - **Combined:** All of the above in a single query
 
-When a search query is received, the query text is embedded and results are ranked by `array_cosine_similarity()`. If embedding generation fails (e.g., Ollama is down), search gracefully falls back to chronological ordering.
+When a search query is received in vector or hybrid mode, the query text is embedded and results are ranked by `array_cosine_similarity()`. If embedding generation fails (e.g., Ollama is down), vector search falls back to chronological ordering and hybrid degrades to keyword-only.
 
 ## Layer 2: Derived Knowledge Graph (Future)
 
@@ -104,7 +111,7 @@ Engram uses a **server-first architecture** to avoid DuckDB's single-writer file
 
 ## Infrastructure
 
-- **Database:** DuckDB with VSS extension — single-file, portable, HNSW indexing, native LIST and JSON support
+- **Database:** DuckDB with VSS and FTS extensions — single-file, portable, HNSW indexing for vector search, BM25 indexing for full-text search, native LIST and JSON support
 - **Application:** Go with official MCP SDK — single static binary, cross-platform
 - **Embeddings:** Ollama — local generation, OpenAI-compatible `/v1/embeddings` endpoint, no external API costs
 - **Default port:** 3490 (configurable via `ENGRAM_PORT`)
@@ -133,12 +140,10 @@ Deployment with PersistentVolume for the `.duckdb` file. Requires ingress config
 ## Current Limitations
 
 - **Hardcoded embedding dimension:** Schema uses `FLOAT[768]` (tied to `nomic-embed-text`)
-- **No hybrid ranking:** Pure semantic search, no temporal decay factor
-- **No full-text search:** Semantic search covers most use cases; FTS is a future enhancement
+- **FTS index rebuild scales linearly:** DuckDB FTS doesn't support incremental updates, so the full-text index is rebuilt lazily (on the next keyword/hybrid search after a write). This is imperceptible under 1K episodes, takes 1–5 seconds at 1K–10K, and may need a different strategy beyond 10K.
 
 ## Future Roadmap
 
-- Full-text search and hybrid search mode (v2.2)
 - Layer 2 knowledge graph with entity extraction (v3)
 - Memory consolidation and summarization via Dreamer service (v3)
 - Support for multiple embedding models and dimensions

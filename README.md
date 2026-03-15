@@ -18,8 +18,8 @@ Most AI memory systems couple write reliability to LLM availability by performin
 
 ## Features
 
-- **Semantic search** — results ranked by relevance using vector similarity, with similarity scores and configurable threshold
-- **Graceful fallback** — works even when the embedding service is unavailable
+- **Three search modes** — find memories by meaning (vector), by exact words (keyword), or both at once (hybrid)
+- **Graceful fallback** — keyword search works even when the embedding service is unavailable; hybrid degrades gracefully
 - **Fast queries** — DuckDB HNSW indexing for sub-100ms vector search
 - **Zero external APIs** — all embeddings generated locally via Ollama
 - **Single binary** — portable across Linux, macOS, and Windows

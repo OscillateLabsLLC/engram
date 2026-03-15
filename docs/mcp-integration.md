@@ -219,9 +219,16 @@ Search episodes using semantic similarity and filters.
 | `tags`            |          | Filter by tags (AND logic)                                                                         |
 | `source`          |          | Filter by source client                                                                            |
 | `include_expired` |          | Include expired episodes (default: false)                                                          |
-| `min_similarity`  |          | Minimum cosine similarity threshold (0.0–1.0). Only applies when `query` is provided. |
+| `min_similarity`  |          | Minimum similarity score to include (0.0–1.0). Only applies in vector mode. |
+| `search_mode`     |          | How to search: `vector` (by meaning, default), `keyword` (by exact words), or `hybrid` (both combined). The default will change to `hybrid` in the next major version. |
+| `search_alpha`    |          | In hybrid mode, how much to favor meaning vs. exact words. Higher = more meaning-based, lower = more word-based (default: 0.7). For pure word search, use `search_mode=keyword` instead. |
 
-Search results include a `similarity` field (0.0–1.0) when a `query` is provided, indicating how relevant each result is. Results without a query return `similarity: null`.
+**Which mode should I use?**
+- **`vector`** (default) — Best when you want conceptually similar results. "What are my deployment preferences?" will find memories about CI/CD pipelines, hosting, etc. even if they don't contain the word "deployment."
+- **`keyword`** — Best when you know the exact words. Useful when Ollama is down, or when you need precise term matching.
+- **`hybrid`** — Best of both worlds. Finds results that are both semantically relevant and contain the right words. Will become the default in a future version.
+
+Search results include a `similarity` score (0.0–1.0) in vector and hybrid modes. Keyword mode does not return similarity scores.
 
 ### `get_episodes`
 
