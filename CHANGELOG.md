@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/OscillateLabsLLC/engram/compare/v1.2.3...v1.3.0) (2026-03-15)
+
+
+### Features
+
+* v2.0 server-only architecture with stdio proxy ([4de8872](https://github.com/OscillateLabsLLC/engram/commit/4de8872b5691319361eae9e7bb0c04117b246158))
+
 ## [1.2.3](https://github.com/OscillateLabsLLC/engram/compare/v1.2.2...v1.2.3) (2026-03-01)
 
 
