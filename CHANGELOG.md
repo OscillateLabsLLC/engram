@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/OscillateLabsLLC/engram/compare/v2.0.0...v2.1.0) (2026-03-15)
+
+
+### Features
+
+* add similarity scores and min_similarity threshold to search ([858e83f](https://github.com/OscillateLabsLLC/engram/commit/858e83ff6e165ab9fb0c32e45d86065f960cf0c4))
+
 ## [2.0.0](https://github.com/OscillateLabsLLC/engram/compare/v1.2.3...v2.0.0) (2026-03-15)
 
 
