@@ -37,11 +37,16 @@ func NewStore(dbPath string) (*Store, error) {
 
 // initialize sets up the database schema and extensions
 func (s *Store) initialize() error {
-	schema := `
-		-- Install and load VSS extension
-		INSTALL vss;
-		LOAD vss;
+	// Install and load VSS extension as separate calls so the download
+	// completes before LOAD attempts to use the file.
+	if _, err := s.db.Exec("INSTALL vss"); err != nil {
+		return fmt.Errorf("failed to install VSS extension: %w", err)
+	}
+	if _, err := s.db.Exec("LOAD vss"); err != nil {
+		return fmt.Errorf("failed to load VSS extension: %w", err)
+	}
 
+	schema := `
 		-- Create episodes table if it doesn't exist
 		CREATE TABLE IF NOT EXISTS episodes (
 			id VARCHAR PRIMARY KEY,

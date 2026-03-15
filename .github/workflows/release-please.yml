@@ -130,6 +130,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Lowercase repo name
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -144,7 +148,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ steps.repo.outputs.name }}
 
       - name: Build and push by digest
         id: build
@@ -153,7 +157,7 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=ghcr.io/${{ steps.repo.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
 
@@ -179,6 +183,10 @@ jobs:
       contents: read
       packages: write
     steps:
+      - name: Lowercase repo name
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Download digests
         uses: actions/download-artifact@v8
         with:
@@ -200,7 +208,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ steps.repo.outputs.name }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.release-please.outputs.tag_name }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.release-please.outputs.tag_name }}
@@ -212,4 +220,4 @@ jobs:
         run: |
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+            $(printf 'ghcr.io/${{ steps.repo.outputs.name }}@sha256:%s ' *)
