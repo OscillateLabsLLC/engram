@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -643,6 +644,373 @@ func TestDeleteEpisode(t *testing.T) {
 			t.Error("Expected error for non-existent episode")
 		}
 	})
+}
+
+func TestSearchKeywordMode(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Insert episodes with distinct content for keyword matching
+	episodes := []*models.Episode{
+		{Content: "The quick brown fox jumps over the lazy dog", Source: "test", Name: "fox story"},
+		{Content: "A lazy cat sleeps on the warm windowsill", Source: "test", Name: "cat nap"},
+		{Content: "Quantum computing uses qubits for parallel processing", Source: "test", Name: "quantum"},
+	}
+
+	for _, ep := range episodes {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert episode: %v", err)
+		}
+	}
+
+	t.Run("keyword search returns FTS results", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "lazy",
+			SearchMode: "keyword",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		if len(results) != 2 {
+			t.Fatalf("Expected 2 results for 'lazy', got %d", len(results))
+		}
+
+		// Both results should contain "lazy"
+		for _, r := range results {
+			if !containsWord(r.Content, "lazy") && !containsWord(r.Name, "lazy") {
+				t.Errorf("Result %q does not contain 'lazy'", r.Content)
+			}
+		}
+	})
+
+	t.Run("keyword search returns no results for non-matching query", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "elephants",
+			SearchMode: "keyword",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		if len(results) != 0 {
+			t.Errorf("Expected 0 results for 'elephants', got %d", len(results))
+		}
+	})
+
+	t.Run("keyword search does not require embedding", func(t *testing.T) {
+		// Keyword search should work without QueryEmbedding
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "quantum",
+			SearchMode: "keyword",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		if len(results) != 1 {
+			t.Fatalf("Expected 1 result for 'quantum', got %d", len(results))
+		}
+		if results[0].Content != episodes[2].Content {
+			t.Errorf("Expected quantum episode, got %q", results[0].Content)
+		}
+		// Similarity should be nil for keyword-only search
+		if results[0].Similarity != nil {
+			t.Errorf("Expected nil similarity for keyword search, got %f", *results[0].Similarity)
+		}
+	})
+}
+
+func TestSearchHybridMode(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create embeddings for semantic similarity
+	embed1 := make([]float32, 768)
+	embed1[0] = 1.0 // Points in dimension 0
+
+	embed2 := make([]float32, 768)
+	embed2[1] = 1.0 // Points in dimension 1
+
+	embed3 := make([]float32, 768)
+	embed3[0] = 0.7
+	embed3[1] = 0.7 // Between dimensions 0 and 1
+
+	episodes := []*models.Episode{
+		{Content: "The quick brown fox jumps over the lazy dog", Source: "test", Embedding: embed1},
+		{Content: "A lazy cat sleeps on the warm windowsill", Source: "test", Embedding: embed2},
+		{Content: "The fox is quick and not at all lazy today", Source: "test", Embedding: embed3},
+	}
+
+	for _, ep := range episodes {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert episode: %v", err)
+		}
+	}
+
+	t.Run("hybrid search combines scores", func(t *testing.T) {
+		queryEmbed := make([]float32, 768)
+		queryEmbed[0] = 1.0
+
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:          "fox",
+			QueryEmbedding: queryEmbed,
+			SearchMode:     "hybrid",
+			SearchAlpha:    0.5,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		// Should return episodes that match keyword "fox" OR have high cosine similarity
+		if len(results) == 0 {
+			t.Fatal("Expected results for hybrid search, got 0")
+		}
+	})
+
+	t.Run("default alpha applies when not specified", func(t *testing.T) {
+		queryEmbed := make([]float32, 768)
+		queryEmbed[0] = 1.0
+
+		// Verify that omitting SearchAlpha doesn't error and produces results
+		// (default alpha=0.7 is applied internally)
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:          "fox",
+			QueryEmbedding: queryEmbed,
+			SearchMode:     "hybrid",
+			// SearchAlpha omitted — defaults to 0.7
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		if len(results) == 0 {
+			t.Fatal("Expected results with default alpha")
+		}
+
+		// All results containing "fox" should be present
+		foxCount := 0
+		for _, r := range results {
+			if containsWord(r.Content, "fox") {
+				foxCount++
+			}
+		}
+		if foxCount < 2 {
+			t.Errorf("Expected at least 2 results containing 'fox', got %d", foxCount)
+		}
+	})
+
+	t.Run("alpha=1.0 weights cosine only", func(t *testing.T) {
+		queryEmbed := make([]float32, 768)
+		queryEmbed[1] = 1.0 // Points toward embed2 (cat episode)
+
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:          "fox",
+			QueryEmbedding: queryEmbed,
+			SearchMode:     "hybrid",
+			SearchAlpha:    1.0, // Cosine only
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		if len(results) == 0 {
+			t.Fatal("Expected results with alpha=1.0")
+		}
+
+		// With alpha=1.0, cosine similarity fully determines ranking.
+		// queryEmbed points in dimension 1, so embed2 (cat) should be first.
+		if !containsWord(results[0].Content, "cat") {
+			t.Errorf("Expected cat episode first with alpha=1.0, got %q", results[0].Content)
+		}
+	})
+}
+
+func TestSearchDefaultModeUnchanged(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	embed1 := make([]float32, 768)
+	embed1[0] = 1.0
+
+	ep := &models.Episode{
+		Content:   "Test default mode",
+		Source:    "test",
+		Embedding: embed1,
+	}
+	if err := store.InsertEpisode(ctx, ep); err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Empty search mode should behave like "vector" (existing behavior)
+	queryEmbed := make([]float32, 768)
+	queryEmbed[0] = 1.0
+
+	results, err := store.Search(ctx, models.SearchParams{
+		QueryEmbedding: queryEmbed,
+		MaxResults:     10,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(results))
+	}
+
+	// Similarity should be populated (vector mode behavior)
+	if results[0].Similarity == nil {
+		t.Error("Expected similarity to be populated for default (vector) mode")
+	}
+}
+
+func TestFTSIndexLazyRebuild(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Insert first episode
+	ep1 := &models.Episode{
+		Content: "Original content about databases",
+		Source:  "test",
+	}
+	if err := store.InsertEpisode(ctx, ep1); err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Search with keyword mode — should find it (triggers initial FTS index build)
+	results, err := store.Search(ctx, models.SearchParams{
+		Query:      "databases",
+		SearchMode: "keyword",
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Expected 1 result after first insert, got %d", len(results))
+	}
+
+	// Insert second episode — should mark FTS as stale
+	ep2 := &models.Episode{
+		Content: "New content about databases and caching",
+		Source:  "test",
+	}
+	if err := store.InsertEpisode(ctx, ep2); err != nil {
+		t.Fatalf("Failed to insert: %v", err)
+	}
+
+	// Search again — should rebuild index and find both
+	results, err = store.Search(ctx, models.SearchParams{
+		Query:      "databases",
+		SearchMode: "keyword",
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("Expected 2 results after second insert and rebuild, got %d", len(results))
+	}
+}
+
+func TestSearchKeywordWithFilters(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	episodes := []*models.Episode{
+		{Content: "Alpha testing in production", Source: "test", GroupID: "group-1", Tags: []string{"dev"}},
+		{Content: "Alpha version released today", Source: "test", GroupID: "group-2", Tags: []string{"release"}},
+		{Content: "Beta testing started", Source: "test", GroupID: "group-1", Tags: []string{"dev"}},
+	}
+
+	for _, ep := range episodes {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	t.Run("keyword with group filter", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "Alpha",
+			SearchMode: "keyword",
+			GroupID:    "group-1",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Errorf("Expected 1 result, got %d", len(results))
+		}
+	})
+
+	t.Run("keyword with tag filter", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "Alpha",
+			SearchMode: "keyword",
+			Tags:       []string{"release"},
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Errorf("Expected 1 result, got %d", len(results))
+		}
+	})
+}
+
+func TestSanitizeFTSQuery(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"single quotes escaped", "it's a test", "it''s a test"},
+		{"FTS operators stripped", "+foo -bar", "foo bar"},
+		{"wildcards stripped", "test*", "test"},
+		{"double quotes stripped", `"exact phrase"`, "exact phrase"},
+		{"parentheses stripped", "(group) test", "group test"},
+		{"backslashes stripped", `path\to\file`, "pathtofile"},
+		{"semicolons stripped", "test; DROP TABLE", "test DROP TABLE"},
+		{"SQL comments stripped", "test -- comment", "test  comment"},
+		{"block comments stripped", "test /* comment */ end", "test  comment  end"},
+		{"injection attempt", "'; DROP TABLE episodes; --", "'' DROP TABLE episodes "},
+		{"empty string", "", ""},
+		{"only special chars", `+-*"();`, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFTSQuery(tt.input)
+			if got != tt.expected {
+				t.Errorf("sanitizeFTSQuery(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// containsWord checks if text contains a word (case-insensitive)
+func containsWord(text, word string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, strings.ToLower(word))
 }
 
 func setupTestStore(t *testing.T) *Store {

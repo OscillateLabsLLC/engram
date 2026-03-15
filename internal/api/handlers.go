@@ -37,6 +37,8 @@ type SearchRequest struct {
 	Source         string   `json:"source,omitempty"`
 	IncludeExpired bool     `json:"include_expired,omitempty"`
 	MinSimilarity  float64  `json:"min_similarity,omitempty"`
+	SearchMode     string   `json:"search_mode,omitempty"`
+	SearchAlpha    float64  `json:"search_alpha,omitempty"`
 }
 
 // GetEpisodesRequest represents query parameters for getting episodes
@@ -148,6 +150,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		req.Source = r.URL.Query().Get("source")
 		req.Before = r.URL.Query().Get("before")
 		req.After = r.URL.Query().Get("after")
+		req.SearchMode = r.URL.Query().Get("search_mode")
 
 		if maxResults := r.URL.Query().Get("max_results"); maxResults != "" {
 			fmt.Sscanf(maxResults, "%d", &req.MaxResults)
@@ -155,12 +158,27 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if minSim := r.URL.Query().Get("min_similarity"); minSim != "" {
 			fmt.Sscanf(minSim, "%f", &req.MinSimilarity)
 		}
+		if alpha := r.URL.Query().Get("search_alpha"); alpha != "" {
+			fmt.Sscanf(alpha, "%f", &req.SearchAlpha)
+		}
 		if r.URL.Query().Get("include_expired") == "true" {
 			req.IncludeExpired = true
 		}
 		if tags := r.URL.Query().Get("tags"); tags != "" {
 			req.Tags = strings.Split(tags, ",")
 		}
+	}
+
+	// Validate search_mode
+	if req.SearchMode != "" && req.SearchMode != "vector" && req.SearchMode != "keyword" && req.SearchMode != "hybrid" {
+		errorResponse(w, http.StatusBadRequest, "search_mode must be 'vector', 'keyword', or 'hybrid'")
+		return
+	}
+
+	// Validate search_alpha range (only check when explicitly provided)
+	if req.SearchAlpha < 0 || req.SearchAlpha > 1 {
+		errorResponse(w, http.StatusBadRequest, "search_alpha must be between 0.0 and 1.0")
+		return
 	}
 
 	// Set defaults
@@ -171,9 +189,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		req.MaxResults = 10
 	}
 
-	// Generate embedding for query if provided
+	// Generate embedding for query if provided (skip for keyword mode)
 	var queryEmbedding []float32
-	if req.Query != "" {
+	if req.Query != "" && req.SearchMode != "keyword" {
 		embedCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
 
@@ -217,6 +235,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Source:         req.Source,
 		IncludeExpired: req.IncludeExpired,
 		MinSimilarity:  req.MinSimilarity,
+		SearchMode:     req.SearchMode,
+		SearchAlpha:    req.SearchAlpha,
 	})
 
 	if err != nil {

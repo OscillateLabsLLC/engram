@@ -32,6 +32,8 @@ type SearchParams struct {
 	Source         string     `json:"source,omitempty"`
 	IncludeExpired bool       `json:"include_expired"`
 	MinSimilarity  float64    `json:"min_similarity,omitempty"` // Minimum cosine similarity threshold (0.0-1.0)
+	SearchMode     string     `json:"search_mode,omitempty"`    // "vector" (default), "keyword", or "hybrid"
+	SearchAlpha    float64    `json:"search_alpha,omitempty"`   // Hybrid weighting: 0.0 = BM25 only, 1.0 = cosine only (default: 0.7)
 }
 
 // UpdateParams defines parameters for updating an episode

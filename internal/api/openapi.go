@@ -178,6 +178,28 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 								"maximum": 1.0,
 							},
 						},
+						{
+							"name":        "search_mode",
+							"in":          "query",
+							"description": "Search mode: 'vector' (default) for semantic similarity, 'keyword' for BM25 full-text search, 'hybrid' for combined scoring. The default will change to 'hybrid' in the next major version.",
+							"schema": map[string]interface{}{
+								"type":    "string",
+								"enum":    []string{"vector", "keyword", "hybrid"},
+								"default": "vector",
+							},
+						},
+						{
+							"name":        "search_alpha",
+							"in":          "query",
+							"description": "Hybrid search weighting between cosine similarity and BM25. 1.0 = cosine only, lower values weight BM25 more (default: 0.7). For pure BM25, use search_mode='keyword' instead. Only used when search_mode is 'hybrid'.",
+							"schema": map[string]interface{}{
+								"type":    "number",
+								"format":  "double",
+								"minimum": 0.0,
+								"maximum": 1.0,
+								"default": 0.7,
+							},
+						},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
@@ -16,7 +17,9 @@ import (
 
 // Store wraps DuckDB operations
 type Store struct {
-	db *sql.DB
+	db       *sql.DB
+	ftsStale bool
+	ftsMu    sync.Mutex
 }
 
 // NewStore creates a new DuckDB store
@@ -85,6 +88,17 @@ func (s *Store) initialize() error {
 	// Try to create HNSW index (will fail if already exists, which is fine)
 	// Note: VSS extension syntax may vary, this is a placeholder
 	_, _ = s.db.Exec("CREATE INDEX IF NOT EXISTS idx_episodes_embedding ON episodes USING HNSW (embedding)")
+
+	// Install and load FTS extension for full-text search
+	if _, err := s.db.Exec("INSTALL fts"); err != nil {
+		return fmt.Errorf("failed to install FTS extension: %w", err)
+	}
+	if _, err := s.db.Exec("LOAD fts"); err != nil {
+		return fmt.Errorf("failed to load FTS extension: %w", err)
+	}
+
+	// Mark FTS index as stale so it gets built on first FTS search
+	s.ftsStale = true
 
 	return nil
 }
@@ -211,11 +225,39 @@ func (s *Store) InsertEpisode(ctx context.Context, ep *models.Episode) error {
 		return fmt.Errorf("failed to insert episode: %w", err)
 	}
 
+	s.ftsMu.Lock()
+	s.ftsStale = true
+	s.ftsMu.Unlock()
+
 	return nil
 }
 
+// episodeCols is the standard column list for episode queries.
+const episodeCols = `id, content, name, source, source_model, source_description,
+	group_id, tags, created_at, valid_at, expired_at, metadata`
+
 // Search finds episodes matching the given parameters
 func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]models.Episode, error) {
+	// Determine effective search mode
+	mode := params.SearchMode
+	if mode == "" {
+		mode = "vector"
+	}
+
+	needsFTS := mode == "keyword" || mode == "hybrid"
+
+	// Warn if min_similarity is set but won't be applied
+	if params.MinSimilarity > 0 && mode != "vector" && mode != "" {
+		fmt.Fprintf(os.Stderr, "Warning: min_similarity is ignored in %q search mode (only applies to vector mode)\n", mode)
+	}
+
+	// Rebuild FTS index if needed for keyword/hybrid modes
+	if needsFTS && params.Query != "" {
+		if err := s.ensureFTSIndex(); err != nil {
+			return nil, fmt.Errorf("failed to ensure FTS index: %w", err)
+		}
+	}
+
 	var conditions []string
 	var args []interface{}
 	argIdx := 1
@@ -231,25 +273,35 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		}
 	}
 
-	// Build inner query with similarity computed once
-	var innerSelect string
-	if hasSemantic {
-		innerSelect = fmt.Sprintf(`
-		SELECT id, content, name, source, source_model, source_description,
-		       group_id, tags, created_at, valid_at, expired_at, metadata,
-		       array_cosine_similarity(embedding, %s::FLOAT[768]) AS similarity
-		FROM episodes
-		WHERE 1=1
-	`, string(embeddingJSON))
-	} else {
-		innerSelect = `
-		SELECT id, content, name, source, source_model, source_description,
-		       group_id, tags, created_at, valid_at, expired_at, metadata,
-		       NULL AS similarity
-		FROM episodes
-		WHERE 1=1
-	`
+	// For keyword mode, we never use semantic similarity
+	if mode == "keyword" {
+		hasSemantic = false
 	}
+
+	// Build the computed columns (similarity, bm25) based on mode
+	hasBM25 := needsFTS && params.Query != ""
+	var computedCols string
+	switch {
+	case hasSemantic && hasBM25:
+		computedCols = fmt.Sprintf(`,
+			array_cosine_similarity(embedding, %s::FLOAT[768]) AS similarity,
+			fts_main_episodes.match_bm25(id, '%s', fields := 'content,name') AS bm25_score`,
+			string(embeddingJSON), sanitizeFTSQuery(params.Query))
+	case hasSemantic:
+		computedCols = fmt.Sprintf(`,
+			array_cosine_similarity(embedding, %s::FLOAT[768]) AS similarity`,
+			string(embeddingJSON))
+	case hasBM25:
+		computedCols = fmt.Sprintf(`,
+			NULL AS similarity,
+			fts_main_episodes.match_bm25(id, '%s', fields := 'content,name') AS bm25_score`,
+			sanitizeFTSQuery(params.Query))
+	default:
+		computedCols = `,
+			NULL AS similarity`
+	}
+
+	innerSelect := fmt.Sprintf("SELECT %s%s FROM episodes WHERE 1=1", episodeCols, computedCols)
 
 	// Only filter out NULL embeddings when we're actually doing semantic ranking
 	if hasSemantic {
@@ -301,21 +353,67 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		innerSelect += " AND " + strings.Join(conditions, " AND ")
 	}
 
-	// Wrap in CTE so min_similarity filter and ORDER BY reference the
-	// already-computed similarity column instead of recomputing it.
-	query := "WITH scored AS (" + innerSelect + ") SELECT * FROM scored"
+	// Standard result columns for the outer SELECT (always 13 columns for scanEpisodes)
+	outerCols := episodeCols + ", similarity"
 
-	if hasSemantic && params.MinSimilarity > 0 {
-		query += fmt.Sprintf(" WHERE similarity >= %f", params.MinSimilarity)
+	// Build the final query based on mode
+	var query string
+	switch {
+	case mode == "keyword" && hasBM25:
+		query = fmt.Sprintf("WITH scored AS (%s) SELECT %s FROM scored WHERE bm25_score IS NOT NULL ORDER BY bm25_score DESC",
+			innerSelect, outerCols)
+
+	case mode == "hybrid" && hasBM25:
+		// Default alpha to 0.7 when not explicitly set (Go zero-value).
+		// alpha=0.0 is not a valid user choice for hybrid mode — use keyword mode for pure BM25.
+		alpha := params.SearchAlpha
+		if alpha == 0 {
+			alpha = 0.7
+		}
+
+		if hasSemantic {
+			query = fmt.Sprintf(`WITH scored AS (%s),
+				bm25_stats AS (
+					SELECT MIN(bm25_score) AS min_bm25, MAX(bm25_score) AS max_bm25
+					FROM scored WHERE bm25_score IS NOT NULL
+				),
+				hybrid AS (
+					SELECT s.*,
+					       CASE
+					           WHEN b.max_bm25 = b.min_bm25 THEN
+					               CASE WHEN s.bm25_score IS NOT NULL THEN 1.0 ELSE 0.0 END
+					           WHEN s.bm25_score IS NOT NULL THEN
+					               (s.bm25_score - b.min_bm25) / (b.max_bm25 - b.min_bm25)
+					           ELSE 0.0
+					       END AS norm_bm25,
+					       COALESCE(s.similarity, 0.0) AS cosine_score
+					FROM scored s, bm25_stats b
+					WHERE s.bm25_score IS NOT NULL OR s.similarity IS NOT NULL
+				)
+				SELECT %s FROM hybrid
+				ORDER BY (%f * cosine_score + %f * norm_bm25) DESC`,
+				innerSelect, outerCols, alpha, 1.0-alpha)
+		} else {
+			// No embedding — hybrid degrades to keyword
+			query = fmt.Sprintf("WITH scored AS (%s) SELECT %s FROM scored WHERE bm25_score IS NOT NULL ORDER BY bm25_score DESC",
+				innerSelect, outerCols)
+		}
+
+	default: // vector mode, or any mode without a query
+		query = "WITH scored AS (" + innerSelect + ") SELECT * FROM scored"
+
+		if hasSemantic && params.MinSimilarity > 0 {
+			query += fmt.Sprintf(" WHERE similarity >= %f", params.MinSimilarity)
+		}
+
+		if hasSemantic {
+			query += " ORDER BY similarity DESC"
+		} else {
+			query += " ORDER BY created_at DESC"
+		}
 	}
 
-	if hasSemantic {
-		query += " ORDER BY similarity DESC"
-	} else {
-		query += " ORDER BY created_at DESC"
-	}
-
-	// Limit results
+	// Apply LIMIT
 	if params.MaxResults > 0 {
 		query += fmt.Sprintf(" LIMIT %d", params.MaxResults)
 	} else {
@@ -327,7 +425,6 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		return nil, fmt.Errorf("failed to execute search query: %w", err)
 	}
 	defer rows.Close()
-
 	return s.scanEpisodes(rows)
 }
 
@@ -395,6 +492,10 @@ func (s *Store) UpdateEpisode(ctx context.Context, id string, params models.Upda
 		return fmt.Errorf("episode not found: %s", id)
 	}
 
+	s.ftsMu.Lock()
+	s.ftsStale = true
+	s.ftsMu.Unlock()
+
 	return nil
 }
 
@@ -426,12 +527,76 @@ func (s *Store) DeleteEpisode(ctx context.Context, id string) error {
 		return fmt.Errorf("episode not found: %s", id)
 	}
 
+	s.ftsMu.Lock()
+	s.ftsStale = true
+	s.ftsMu.Unlock()
+
+	return nil
+}
+
+// rebuildFTSIndex rebuilds the full-text search index on the episodes table.
+// Must be called with ftsMu held.
+//
+// Scaling note: This does a full rebuild (drop + re-index) because DuckDB FTS
+// doesn't support incremental updates. Cost is O(rows × avg_text_length):
+//   - <1K episodes: sub-second
+//   - 1K–10K: 1–5s (noticeable on first search after a write)
+//   - 10K+: consider alternative indexing strategy
+func (s *Store) rebuildFTSIndex() error {
+	_, err := s.db.Exec("PRAGMA create_fts_index('episodes', 'id', 'content', 'name', overwrite=1)")
+	if err != nil {
+		return fmt.Errorf("failed to rebuild FTS index: %w", err)
+	}
+	return nil
+}
+
+// ensureFTSIndex rebuilds the FTS index if it is stale.
+func (s *Store) ensureFTSIndex() error {
+	s.ftsMu.Lock()
+	defer s.ftsMu.Unlock()
+
+	if !s.ftsStale {
+		return nil
+	}
+
+	if err := s.rebuildFTSIndex(); err != nil {
+		return err
+	}
+	s.ftsStale = false
 	return nil
 }
 
 // Close closes the database connection
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// sanitizeFTSQuery escapes a user query for safe use in DuckDB's match_bm25().
+// The result is interpolated into a SQL string literal ('...'), so single quotes
+// are escaped. FTS operators and SQL metacharacters are stripped as defense-in-depth.
+//
+// Note: single-quote escaping ('' inside a SQL string) is the primary injection
+// defense — it prevents breaking out of the string literal. The other stripping
+// is belt-and-suspenders.
+func sanitizeFTSQuery(s string) string {
+	// Remove multi-char SQL metacharacters first (before individual char stripping)
+	s = strings.ReplaceAll(s, "--", "")
+	s = strings.ReplaceAll(s, "/*", "")
+	s = strings.ReplaceAll(s, "*/", "")
+	// Strip FTS query syntax and SQL metacharacters
+	replacer := strings.NewReplacer(
+		`\`, ``,
+		`"`, ``,
+		`+`, ``,
+		`-`, ``,
+		`*`, ``,
+		`(`, ``,
+		`)`, ``,
+		`;`, ``,
+	)
+	s = replacer.Replace(s)
+	// Escape single quotes for SQL string literal safety
+	return strings.ReplaceAll(s, "'", "''")
 }
 
 // Helper functions for scanning rows

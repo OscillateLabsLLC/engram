@@ -97,7 +97,7 @@ func (s *Server) registerTools() {
 	// search tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "search",
-		Description: "Search episodes using semantic similarity, temporal, and tag filters. For most searches, only provide 'query'. All other parameters are optional secondary filters — omit them unless you have a specific reason to narrow results.",
+		Description: "Search episodes using semantic similarity, keyword matching, or hybrid mode. For most searches, only provide 'query'. All other parameters are optional secondary filters — omit them unless you have a specific reason to narrow results. Note: the default search_mode will change from 'vector' to 'hybrid' in the next major version.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -139,6 +139,17 @@ func (s *Server) registerTools() {
 				"min_similarity": map[string]interface{}{
 					"type":        "number",
 					"description": "Minimum cosine similarity threshold (0.0-1.0). Only results with similarity >= this value are returned. Only applies when a query is provided. Optional.",
+				},
+				"search_mode": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"vector", "keyword", "hybrid"},
+					"description": "Search mode: 'vector' (default) for semantic similarity, 'keyword' for BM25 full-text search, 'hybrid' for combined scoring. The default will change to 'hybrid' in the next major version.",
+				},
+				"search_alpha": map[string]interface{}{
+					"type":        "number",
+					"description": "Hybrid search weighting between cosine similarity and BM25. 1.0 = cosine only, lower values weight BM25 more (default: 0.7). For pure BM25, use search_mode='keyword' instead. Only used when search_mode is 'hybrid'.",
+					"minimum":     0.0,
+					"maximum":     1.0,
 				},
 			},
 			Required: []string{},
@@ -305,15 +316,29 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		Source         string   `json:"source"`
 		IncludeExpired bool     `json:"include_expired"`
 		MinSimilarity  float64  `json:"min_similarity"`
+		SearchMode     string   `json:"search_mode"`
+		SearchAlpha    float64  `json:"search_alpha"`
 	}
 
 	if err := parseParams(request.Params.Arguments, &params); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
 	}
 
-	// Generate embedding for semantic search
+	// Validate search_mode
+	if params.SearchMode != "" && params.SearchMode != "vector" && params.SearchMode != "keyword" && params.SearchMode != "hybrid" {
+		return mcp.NewToolResultError("search_mode must be 'vector', 'keyword', or 'hybrid'"), nil
+	}
+
+	// Validate search_alpha range
+	if params.SearchAlpha < 0 || params.SearchAlpha > 1 {
+		return mcp.NewToolResultError("search_alpha must be between 0.0 and 1.0"), nil
+	}
+
+
+
+	// Generate embedding for semantic search (skip for keyword mode)
 	var queryEmbedding []float32
-	if params.Query != "" {
+	if params.Query != "" && params.SearchMode != "keyword" {
 		embedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -354,6 +379,8 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		Source:         params.Source,
 		IncludeExpired: params.IncludeExpired,
 		MinSimilarity:  params.MinSimilarity,
+		SearchMode:     params.SearchMode,
+		SearchAlpha:    params.SearchAlpha,
 	}
 
 	episodes, err := s.store.Search(ctx, searchParams)
