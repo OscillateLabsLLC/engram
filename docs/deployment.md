@@ -43,7 +43,7 @@ services:
     container_name: engram
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "3490:3490"
     volumes:
       - engram-data:/data
     environment:
@@ -100,29 +100,17 @@ volumes:
 
 ## Manual Docker Usage
 
-### Local/stdio Mode (Default)
-
 ```bash
 docker build -t engram .
-docker run -e OLLAMA_URL=http://host.docker.internal:11434 \
+docker run -p 3490:3490 \
+           -e OLLAMA_URL=http://host.docker.internal:11434 \
            -v $(pwd)/data:/data \
            -e DUCKDB_PATH=/data/engram.duckdb \
            engram
 ```
 
-### HTTP/SSE Mode (Remote Access)
-
-```bash
-docker build -t engram .
-docker run -p 8080:8080 \
-           -e OLLAMA_URL=http://host.docker.internal:11434 \
-           -v $(pwd)/data:/data \
-           -e DUCKDB_PATH=/data/engram.duckdb \
-           engram -mode http -port 8080
-```
-
-HTTP mode exposes:
-- `/mcp/sse` — MCP over Server-Sent Events (for Cursor/Claude Desktop via remote)
+The server exposes:
+- `/mcp/sse` — MCP over Server-Sent Events (primary client transport)
 - `/mcp/message` — MCP message endpoint
 - `/api/v1/*` — REST API for Open WebUI integration
 - `/openapi.json` — OpenAPI 3.0 specification
@@ -144,8 +132,7 @@ spec:
       containers:
         - name: engram
           image: your-registry/engram:latest
-          command: ["/engram"]
-          args: ["-mode", "http", "-port", "8080"]
+          command: ["/engram", "serve"]
           env:
             - name: DUCKDB_PATH
               value: "/data/engram.duckdb"
@@ -154,20 +141,20 @@ spec:
             - name: EMBEDDING_MODEL
               value: "nomic-embed-text"
           ports:
-            - containerPort: 8080
+            - containerPort: 3490
           volumeMounts:
             - name: data
               mountPath: /data
           readinessProbe:
             httpGet:
               path: /ready
-              port: 8080
+              port: 3490
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
-              port: 8080
+              port: 3490
             initialDelaySeconds: 10
             periodSeconds: 30
       volumes:
@@ -183,8 +170,8 @@ spec:
   selector:
     app: engram
   ports:
-    - port: 8080
-      targetPort: 8080
+    - port: 3490
+      targetPort: 3490
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -208,7 +195,7 @@ spec:
               service:
                 name: engram
                 port:
-                  number: 8080
+                  number: 3490
 ```
 
 > **Important:** SSE connections require long timeouts and no buffering. The ingress annotations above are critical for stable MCP connections.
@@ -229,10 +216,10 @@ If you see connection errors to Ollama:
 
 ### Docker on Linux: Port conflicts
 
-If using `network_mode: host`, ensure port 8080 is available:
+If using `network_mode: host`, ensure port 3490 is available:
 
 ```bash
-sudo lsof -i :8080
+sudo lsof -i :3490
 ```
 
 ### Volume permissions

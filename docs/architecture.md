@@ -81,7 +81,7 @@ When built:
 
 ## MCP Server
 
-Go service using the official MCP SDK, exposing tools over stdio transport:
+Go service using the official MCP SDK, exposing tools over SSE:
 
 | Tool | Description | LLM Required |
 | --- | --- | :---: |
@@ -93,19 +93,26 @@ Go service using the official MCP SDK, exposing tools over stdio transport:
 
 Episodes can be marked as expired but not deleted. This prevents accidental memory loss.
 
+## Transport
+
+Engram uses a **server-first architecture** to avoid DuckDB's single-writer file lock:
+
+- **`engram serve`** (default) — HTTP server owning the DuckDB database, exposing MCP over SSE at `/mcp/sse`, REST API at `/api/v1/*`, health probes at `/health` and `/ready`. This is the only process that touches the database.
+- **`engram stdio`** — Thin stateless proxy that bridges stdin/stdout JSON-RPC to the server via SSE. For clients that don't support SSE natively (e.g., Claude Desktop). Uses `mcp-go/client/transport.SSE` for robust endpoint discovery and session management.
+
+**SSE is the primary transport.** Clients that support it (Cursor, Claude Code) connect directly to `http://localhost:3490/mcp/sse`. The stdio proxy is a compatibility shim for clients that only speak stdio.
+
 ## Infrastructure
 
 - **Database:** DuckDB with VSS extension — single-file, portable, HNSW indexing, native LIST and JSON support
 - **Application:** Go with official MCP SDK — single static binary, cross-platform
 - **Embeddings:** Ollama — local generation, OpenAI-compatible `/v1/embeddings` endpoint, no external API costs
-- **Transport:** 
-  - stdio (for local Claude Desktop/Code/Cursor)
-  - HTTP/SSE (for remote access and Open WebUI)
+- **Default port:** 3490 (configurable via `ENGRAM_PORT`)
 
 ## Deployment Options
 
 **Native binary:**
-Single executable + DuckDB file. No Python, no system packages, no database server.
+Single executable + DuckDB file. Run `engram serve` as a background service. See [MCP Integration Guide](mcp-integration.md#running-as-a-background-service) for platform-specific instructions.
 
 **Docker container:**
 Multi-stage build using Debian Bookworm (glibc compatibility). See the [`Dockerfile`](../Dockerfile).
@@ -132,8 +139,9 @@ Deployment with PersistentVolume for the `.duckdb` file. Requires ingress config
 
 ## Future Roadmap
 
-- Layer 2 knowledge graph with entity extraction
-- Memory consolidation and summarization
-- Similarity score in search results and `min_similarity` threshold
+- Similarity score in search results and `min_similarity` threshold (v2.1)
+- Full-text search and hybrid search mode (v2.2)
+- Layer 2 knowledge graph with entity extraction (v3)
+- Memory consolidation and summarization via Dreamer service (v3)
 - Support for multiple embedding models and dimensions
 - Batch embedding generation for bulk imports

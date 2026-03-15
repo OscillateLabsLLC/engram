@@ -73,23 +73,25 @@ ollama pull nomic-embed-text
 
 ### Run
 
-```bash
-export DUCKDB_PATH="./engram.duckdb"
-export OLLAMA_URL="http://localhost:11434"
-export EMBEDDING_MODEL="nomic-embed-text"
+Start the server:
 
-./engram
+```bash
+engram serve
 ```
+
+Engram starts on port 3490 and prints the SSE endpoint URL. All MCP clients connect to this single server -- no database locking conflicts. See [docs/mcp-integration.md](docs/mcp-integration.md) for instructions on running as a background service on macOS, Linux, and Windows.
 
 ## Configuration
 
 Configure via environment variables:
 
-| Variable          | Description                  | Default                  |
-| ----------------- | ---------------------------- | ------------------------ |
-| `DUCKDB_PATH`     | Path to DuckDB database file | `./engram.duckdb`        |
-| `OLLAMA_URL`      | Ollama API endpoint          | `http://localhost:11434` |
-| `EMBEDDING_MODEL` | Embedding model name         | `nomic-embed-text`       |
+| Variable            | Description                             | Default                  |
+| ------------------- | --------------------------------------- | ------------------------ |
+| `DUCKDB_PATH`       | Path to DuckDB database file            | `./engram.duckdb`        |
+| `OLLAMA_URL`        | Ollama API endpoint                     | `http://localhost:11434` |
+| `EMBEDDING_MODEL`   | Embedding model name                    | `nomic-embed-text`       |
+| `ENGRAM_PORT`       | Server port                             | `3490`                   |
+| `ENGRAM_SERVER_URL` | Server URL (used by stdio proxy)        | `http://localhost:3490`  |
 
 See [`.env.example`](.env.example) for a template.
 
@@ -97,29 +99,42 @@ See [`.env.example`](.env.example) for a template.
 
 Engram integrates with Claude Desktop, Claude Code, and Cursor via the Model Context Protocol (MCP).
 
-### Quick Setup (Local)
+### Quick Setup
 
-Add to your `claude_desktop_config.json`:
+1. **Start the server** (see [background service docs](docs/mcp-integration.md#running-as-a-background-service) for persistent setup):
+   ```bash
+   engram serve
+   ```
 
-```json
-{
-  "mcpServers": {
-    "engram-memory": {
-      "command": "/absolute/path/to/engram",
-      "args": [],
-      "env": {
-        "DUCKDB_PATH": "/absolute/path/to/engram.duckdb",
-        "OLLAMA_URL": "http://localhost:11434",
-        "EMBEDDING_MODEL": "nomic-embed-text"
-      }
-    }
-  }
-}
-```
+2. **Connect your client.** Most clients support SSE directly:
 
-> **Tip:** Use absolute paths. On macOS, run `realpath engram` to get the full path.
+   **Cursor** (`.cursor/mcp.json`):
+   ```json
+   {
+     "mcpServers": {
+       "engram-memory": {
+         "url": "http://localhost:3490/mcp/sse"
+       }
+     }
+   }
+   ```
 
-For detailed integration instructions, remote deployment, available MCP tools, and troubleshooting, see [docs/mcp-integration.md](docs/mcp-integration.md).
+   **Claude Desktop** (stdio proxy, for clients that require stdio):
+   ```json
+   {
+     "mcpServers": {
+       "engram-memory": {
+         "command": "/absolute/path/to/engram",
+         "args": ["stdio"],
+         "env": {
+           "ENGRAM_SERVER_URL": "http://localhost:3490"
+         }
+       }
+     }
+   }
+   ```
+
+For detailed integration instructions, available MCP tools, and troubleshooting, see [docs/mcp-integration.md](docs/mcp-integration.md).
 
 ## Docker & Deployment
 
@@ -139,21 +154,23 @@ For detailed deployment instructions including Docker Compose, Kubernetes, and p
 
 ```text
 engram/
-├── cmd/engram/          # Entry point
+├── cmd/engram/          # Entry point (serve / stdio subcommands)
 ├── internal/
+│   ├── api/             # HTTP + MCP SSE server
 │   ├── db/              # DuckDB operations + VSS
 │   ├── embedding/       # Ollama client
-│   ├── mcp/             # MCP server implementation
-│   └── models/          # Data models
+│   ├── mcp/             # MCP tool definitions
+│   ├── models/          # Data models
+│   └── proxy/           # stdio-to-SSE proxy
 ├── scripts/             # Build and test scripts
 ├── .github/workflows/   # CI/CD (build + release)
 └── Dockerfile           # Container image
 ```
 
-- **Go** service using the official MCP SDK ([`mark3labs/mcp-go`](https://github.com/mark3labs/mcp-go))
+- **Server-first**: `engram serve` owns DuckDB exclusively, exposes MCP over SSE + REST API
+- **Thin stdio proxy**: `engram stdio` bridges stdin/stdout to the server for clients that require stdio (e.g., Claude Desktop)
 - **DuckDB** with VSS extension for vector similarity search (HNSW indexing)
 - **Ollama** for local embedding generation (768-dimensional, `nomic-embed-text`)
-- **stdio** transport for MCP client integration
 
 For a deeper dive into the architecture, see [`docs/architecture.md`](docs/architecture.md).
 

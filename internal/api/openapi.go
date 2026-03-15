@@ -24,7 +24,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 		},
 		"servers": []map[string]interface{}{
 			{
-				"url":         "http://localhost:8080",
+				"url":         "http://localhost:3490",
 				"description": "Local development server",
 			},
 		},

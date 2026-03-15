@@ -31,74 +31,103 @@ cd engram
 go build -o engram.exe ./cmd/engram/main.go
 ```
 
-## Configuration
+## Running the Server
 
-### For Claude Desktop
+Engram runs as a background server that all your MCP clients connect to. You need to start it once -- it stays running and handles all memory operations.
 
-1. Open Claude Desktop config:
-   - Press `Win + R`
-   - Type: `%APPDATA%\Claude\`
-   - Open `claude_desktop_config.json`
+### Run as a Startup Task (recommended)
 
-2. Add Engram configuration:
+1. Create a batch file `start-engram.bat` in `C:\Users\YourName\engram\`:
+
+```batch
+@echo off
+set DUCKDB_PATH=C:\Users\YourName\engram\memory.duckdb
+set OLLAMA_URL=http://localhost:11434
+C:\Users\YourName\engram\engram.exe serve
+```
+
+2. Press `Win + R`, type `shell:startup`, press Enter
+3. Create a shortcut to `start-engram.bat` in the Startup folder
+4. Right-click the shortcut → Properties → set "Run" to **Minimized**
+
+Engram will now start automatically on login.
+
+### Run manually (for testing)
+
+#### PowerShell
+
+```powershell
+$env:DUCKDB_PATH = "C:\Users\YourName\engram\memory.duckdb"
+$env:OLLAMA_URL = "http://localhost:11434"
+
+.\engram.exe serve
+```
+
+#### Command Prompt
+
+```cmd
+set DUCKDB_PATH=C:\Users\YourName\engram\memory.duckdb
+set OLLAMA_URL=http://localhost:11434
+
+engram.exe serve
+```
+
+Verify it's running:
+
+```powershell
+curl http://localhost:3490/health
+```
+
+## Configuring MCP Clients
+
+With the server running, configure your MCP clients to connect.
+
+### Cursor
+
+Add to `.cursor/mcp.json` in your project or `%USERPROFILE%\.cursor\mcp.json` for global access:
 
 ```json
 {
   "mcpServers": {
-    "engram-memory": {
-      "command": "C:\\Users\\YourName\\engram\\engram.exe",
-      "args": [],
-      "env": {
-        "DUCKDB_PATH": "C:\\Users\\YourName\\engram\\memory.duckdb",
-        "OLLAMA_URL": "http://localhost:11434",
-        "EMBEDDING_MODEL": "nomic-embed-text"
-      }
+    "engram": {
+      "url": "http://localhost:3490/mcp/sse"
     }
   }
 }
 ```
 
-**Important:** Use double backslashes (`\\`) in Windows paths!
+### Claude Desktop
 
-3. Restart Claude Desktop
+1. Press `Win + R`, type `%APPDATA%\Claude\`, press Enter
+2. Open `claude_desktop_config.json`
+3. Add:
 
-### For Claude Code (VS Code)
-
-1. Open VS Code settings: `Ctrl + Shift + P` → "Preferences: Open User Settings (JSON)"
-2. Add MCP configuration (similar to above)
-3. Restart VS Code
-
-## Running Manually (Testing)
-
-### PowerShell
-
-```powershell
-$env:DUCKDB_PATH = "C:\Users\YourName\engram\test.duckdb"
-$env:OLLAMA_URL = "http://localhost:11434"
-$env:EMBEDDING_MODEL = "nomic-embed-text"
-
-.\engram.exe
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "C:\\Users\\YourName\\engram\\engram.exe",
+      "args": ["stdio"]
+    }
+  }
+}
 ```
 
-### Command Prompt
+**Important:** Use double backslashes (`\\`) in Windows paths.
 
-```cmd
-set DUCKDB_PATH=C:\Users\YourName\engram\test.duckdb
-set OLLAMA_URL=http://localhost:11434
-set EMBEDDING_MODEL=nomic-embed-text
+4. Restart Claude Desktop
 
-engram.exe
+### Claude Code
+
+```powershell
+claude mcp add engram --transport sse http://localhost:3490/mcp/sse
 ```
 
 ## Troubleshooting
 
-### "DuckDB extension not found"
+### "Cannot connect to engram server"
 
-The VSS extension should be automatically installed. If you see errors:
-
-1. Ensure you're running the latest version
-2. Check that the DuckDB path is writable
-3. Try deleting the `.duckdb` file and letting it recreate
+The stdio proxy (used by Claude Desktop) prints this when the server isn't running. Start `engram serve` first.
 
 ### "Cannot connect to Ollama"
 
@@ -106,49 +135,33 @@ The VSS extension should be automatically installed. If you see errors:
 2. Verify the model is installed: `ollama pull nomic-embed-text`
 3. Test the API: `curl http://localhost:11434/api/tags`
 
-### "MCP server not starting in Claude"
+### "Database permission denied"
 
-1. Check paths use double backslashes (`\\`)
-2. Verify `engram.exe` exists at the specified path
-3. Look at Claude Desktop logs:
-   - `%APPDATA%\Claude\logs\`
+Move to a user-writable directory (avoid `Program Files`).
 
-### Permission Errors
+### Port already in use
 
-If you get "Access Denied" errors:
+If port 3490 is taken, set a custom port:
 
-1. Run as Administrator (right-click → "Run as Administrator")
-2. Or move to a user-writable directory (avoid `Program Files`)
+```powershell
+$env:ENGRAM_PORT = "3491"
+.\engram.exe serve
+```
+
+Then update the URLs in your MCP configs to use the new port.
 
 ## File Locations
 
-Default paths on Windows:
-
-- **Config**: `%APPDATA%\Claude\claude_desktop_config.json`
-- **Database**: Same directory as `engram.exe` (or custom via `DUCKDB_PATH`)
-- **Logs**: Check Claude Desktop logs in `%APPDATA%\Claude\logs\`
-
-## Sharing Memory Database
-
-The `.duckdb` file is portable! You can:
-
-- Copy it to another machine (Windows, Mac, Linux)
-- Back it up to cloud storage
-- Keep separate databases for different projects
-
-Just point `DUCKDB_PATH` to wherever you want to store/load from.
+- **Config (Claude)**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **Config (Cursor)**: `%USERPROFILE%\.cursor\mcp.json`
+- **Database**: wherever `DUCKDB_PATH` points (default: current directory)
+- **Logs**: stderr output from `engram serve`
 
 ## Updating
 
-To update Engram:
-
-1. Download new version
-2. Replace `engram.exe`
-3. Restart Claude Desktop/Code
+1. Download the new `engram.exe`
+2. Stop the running server (close the terminal or end the startup task)
+3. Replace `engram.exe`
+4. Restart
 
 Your database file is separate and won't be affected.
-
-## Getting Help
-
-- **Issues**: https://github.com/oscillatelabsllc/engram/issues
-- **Docs**: https://github.com/oscillatelabsllc/engram
