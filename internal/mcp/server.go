@@ -97,7 +97,7 @@ func (s *Server) registerTools() {
 	// search tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "search",
-		Description: "Search episodes using semantic similarity, keyword matching, or hybrid mode. For most searches, only provide 'query'. All other parameters are optional secondary filters — omit them unless you have a specific reason to narrow results. Note: the default search_mode will change from 'vector' to 'hybrid' in the next major version.",
+		Description: "Search episodes using semantic similarity, keyword matching, or hybrid mode. For most searches, only provide 'query'. All other parameters are optional secondary filters — omit them unless you have a specific reason to narrow results.\n\nSearch mode guidance:\n- hybrid (recommended): best for most queries — balances semantic understanding with exact term matching.\n- vector: best for concept/intent queries where your words won't match the stored text (e.g. \"deployment preferences\" finding CI/CD memories).\n- keyword: best for exact terms, proper nouns, error codes, or version strings where semantic drift would hurt (e.g. \"mlx_lm.server\").\n\nNote: the default search_mode will change from 'vector' to 'hybrid' in the next major version.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -138,16 +138,16 @@ func (s *Server) registerTools() {
 				},
 				"min_similarity": map[string]interface{}{
 					"type":        "number",
-					"description": "Minimum cosine similarity threshold (0.0-1.0). Only results with similarity >= this value are returned. Only applies when a query is provided. Optional.",
+					"description": "Minimum cosine similarity threshold (0.0-1.0). 0.5 is a reasonable floor to filter noise. Only applies in vector/hybrid mode. Optional.",
 				},
 				"search_mode": map[string]interface{}{
 					"type":        "string",
 					"enum":        []string{"vector", "keyword", "hybrid"},
-					"description": "Search mode: 'vector' (default) for semantic similarity, 'keyword' for BM25 full-text search, 'hybrid' for combined scoring. The default will change to 'hybrid' in the next major version.",
+					"description": "How to search: 'vector' (default) finds by meaning, 'keyword' finds by exact words (BM25), 'hybrid' combines both. Use keyword for proper nouns/error codes, vector for concept queries, hybrid for everything else.",
 				},
 				"search_alpha": map[string]interface{}{
 					"type":        "number",
-					"description": "Hybrid search weighting between cosine similarity and BM25. 1.0 = cosine only, lower values weight BM25 more (default: 0.7). For pure BM25, use search_mode='keyword' instead. Only used when search_mode is 'hybrid'.",
+					"description": "Hybrid mode weighting. Higher values (0.7+) favor semantic similarity, lower values (0.3-0.5) favor keyword matching (default: 0.7). For pure keyword search, use search_mode='keyword' instead.",
 					"minimum":     0.0,
 					"maximum":     1.0,
 				},
