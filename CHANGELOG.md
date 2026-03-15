@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/OscillateLabsLLC/engram/compare/v2.2.0...v2.2.1) (2026-03-15)
+
+
+### Bug Fixes
+
+* FTS extension load race and graceful fallback when unavailable ([46c7b06](https://github.com/OscillateLabsLLC/engram/commit/46c7b0650ebe5636654cb3ce3b408de21ad4ccac))
+
 ## [2.2.0](https://github.com/OscillateLabsLLC/engram/compare/v2.1.1...v2.2.0) (2026-03-15)
 
 
