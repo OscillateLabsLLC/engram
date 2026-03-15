@@ -17,6 +17,7 @@ type Episode struct {
 	ValidAt           *time.Time `json:"valid_at,omitempty"`
 	ExpiredAt         *time.Time `json:"expired_at,omitempty"`
 	Metadata          string     `json:"metadata,omitempty"` // JSON string
+	Similarity        *float64   `json:"similarity,omitempty"`
 }
 
 // SearchParams defines parameters for searching episodes
@@ -30,6 +31,7 @@ type SearchParams struct {
 	Tags           []string   `json:"tags,omitempty"`
 	Source         string     `json:"source,omitempty"`
 	IncludeExpired bool       `json:"include_expired"`
+	MinSimilarity  float64    `json:"min_similarity,omitempty"` // Minimum cosine similarity threshold (0.0-1.0)
 }
 
 // UpdateParams defines parameters for updating an episode

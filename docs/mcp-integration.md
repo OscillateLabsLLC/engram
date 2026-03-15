@@ -209,16 +209,19 @@ Store a new episode in memory.
 
 Search episodes using semantic similarity and filters.
 
-| Parameter         | Required | Description                                        |
-| ----------------- | :------: | -------------------------------------------------- |
-| `query`           |          | Text to search for (embedded for semantic ranking) |
-| `group_id`        |          | Filter by group                                    |
-| `max_results`     |          | Limit results (default: 10)                        |
-| `before`          |          | ISO 8601 timestamp upper bound                     |
-| `after`           |          | ISO 8601 timestamp lower bound                     |
-| `tags`            |          | Filter by tags (AND logic)                         |
-| `source`          |          | Filter by source client                            |
-| `include_expired` |          | Include expired episodes (default: false)          |
+| Parameter         | Required | Description                                                                                        |
+| ----------------- | :------: | -------------------------------------------------------------------------------------------------- |
+| `query`           |          | Text to search for (embedded for semantic ranking)                                                 |
+| `group_id`        |          | Filter by group                                                                                    |
+| `max_results`     |          | Limit results (default: 10)                                                                        |
+| `before`          |          | ISO 8601 timestamp upper bound                                                                     |
+| `after`           |          | ISO 8601 timestamp lower bound                                                                     |
+| `tags`            |          | Filter by tags (AND logic)                                                                         |
+| `source`          |          | Filter by source client                                                                            |
+| `include_expired` |          | Include expired episodes (default: false)                                                          |
+| `min_similarity`  |          | Minimum cosine similarity threshold (0.0–1.0). Only applies when `query` is provided. |
+
+Search results include a `similarity` field (0.0–1.0) when a `query` is provided, indicating how relevant each result is. Results without a query return `similarity: null`.
 
 ### `get_episodes`
 

@@ -357,6 +357,133 @@ func TestSearchWithSemanticSimilarity(t *testing.T) {
 	if results[0].Content != ep1.Content {
 		t.Errorf("Expected %q first (most similar), got %q", ep1.Content, results[0].Content)
 	}
+
+	// Similarity scores should be populated
+	if results[0].Similarity == nil {
+		t.Fatal("Expected similarity score on first result, got nil")
+	}
+	if results[1].Similarity == nil {
+		t.Fatal("Expected similarity score on second result, got nil")
+	}
+
+	// First result should have higher similarity
+	if *results[0].Similarity <= *results[1].Similarity {
+		t.Errorf("Expected first result similarity (%f) > second (%f)",
+			*results[0].Similarity, *results[1].Similarity)
+	}
+
+	// Scores should be in valid range
+	if *results[0].Similarity < 0 || *results[0].Similarity > 1 {
+		t.Errorf("Similarity out of range [0,1]: %f", *results[0].Similarity)
+	}
+}
+
+func TestSearchWithMinSimilarity(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create two episodes with very different embeddings
+	highMatch := make([]float32, 768)
+	highMatch[0] = 1.0
+
+	lowMatch := make([]float32, 768)
+	lowMatch[1] = 1.0
+
+	ep1 := &models.Episode{
+		Content:   "High similarity match",
+		Source:    "test",
+		Embedding: highMatch,
+	}
+	ep2 := &models.Episode{
+		Content:   "Low similarity match",
+		Source:    "test",
+		Embedding: lowMatch,
+	}
+
+	if err := store.InsertEpisode(ctx, ep1); err != nil {
+		t.Fatalf("Failed to insert ep1: %v", err)
+	}
+	if err := store.InsertEpisode(ctx, ep2); err != nil {
+		t.Fatalf("Failed to insert ep2: %v", err)
+	}
+
+	// Query embedding very close to highMatch
+	queryEmbed := make([]float32, 768)
+	queryEmbed[0] = 1.0
+
+	t.Run("no threshold returns all", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 2 {
+			t.Errorf("Expected 2 results, got %d", len(results))
+		}
+	})
+
+	t.Run("high threshold filters low matches", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			MaxResults:     10,
+			MinSimilarity:  0.5,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("Expected 1 result with high threshold, got %d", len(results))
+		}
+		if results[0].Content != "High similarity match" {
+			t.Errorf("Expected high match, got %q", results[0].Content)
+		}
+	})
+
+	t.Run("very high threshold may return nothing", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			MaxResults:     10,
+			MinSimilarity:  1.1, // impossible threshold
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("Expected 0 results with impossible threshold, got %d", len(results))
+		}
+	})
+}
+
+func TestSearchSimilarityNilWithoutQuery(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	ep := &models.Episode{
+		Content: "No embedding search",
+		Source:  "test",
+	}
+	if err := store.InsertEpisode(ctx, ep); err != nil {
+		t.Fatalf("Failed to insert episode: %v", err)
+	}
+
+	results, err := store.Search(ctx, models.SearchParams{
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Expected 1 result, got %d", len(results))
+	}
+	if results[0].Similarity != nil {
+		t.Errorf("Expected nil similarity without query embedding, got %f", *results[0].Similarity)
+	}
 }
 
 func TestSearchWithExpiration(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -35,6 +36,7 @@ type SearchRequest struct {
 	Tags           []string `json:"tags,omitempty"`
 	Source         string   `json:"source,omitempty"`
 	IncludeExpired bool     `json:"include_expired,omitempty"`
+	MinSimilarity  float64  `json:"min_similarity,omitempty"`
 }
 
 // GetEpisodesRequest represents query parameters for getting episodes
@@ -150,6 +152,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if maxResults := r.URL.Query().Get("max_results"); maxResults != "" {
 			fmt.Sscanf(maxResults, "%d", &req.MaxResults)
 		}
+		if minSim := r.URL.Query().Get("min_similarity"); minSim != "" {
+			fmt.Sscanf(minSim, "%f", &req.MinSimilarity)
+		}
+		if r.URL.Query().Get("include_expired") == "true" {
+			req.IncludeExpired = true
+		}
+		if tags := r.URL.Query().Get("tags"); tags != "" {
+			req.Tags = strings.Split(tags, ",")
+		}
 	}
 
 	// Set defaults
@@ -205,6 +216,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Tags:           req.Tags,
 		Source:         req.Source,
 		IncludeExpired: req.IncludeExpired,
+		MinSimilarity:  req.MinSimilarity,
 	})
 
 	if err != nil {
@@ -322,18 +334,7 @@ func (s *Server) handleUpdateEpisode(w http.ResponseWriter, r *http.Request) {
 
 // handleGetStatus returns system status
 func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// Use Search method to get episode count
-	episodes, err := s.store.Search(ctx, models.SearchParams{
-		GroupID:    "default",
-		MaxResults: 1000000, // Large number to get all
-	})
-
-	count := 0
-	if err == nil {
-		count = len(episodes)
-	}
+	count, err := s.store.CountEpisodes(r.Context())
 
 	successResponse(w, map[string]interface{}{
 		"status":         "operational",

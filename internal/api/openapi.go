@@ -151,12 +151,31 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 							},
 						},
 						{
+							"name":        "tags",
+							"in":          "query",
+							"description": "Comma-separated tags to filter by (AND logic)",
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+						{
 							"name":        "include_expired",
 							"in":          "query",
 							"description": "Include expired episodes",
 							"schema": map[string]interface{}{
 								"type":    "boolean",
 								"default": false,
+							},
+						},
+						{
+							"name":        "min_similarity",
+							"in":          "query",
+							"description": "Minimum cosine similarity threshold (0.0-1.0). Only results with similarity >= this value are returned. Only applies when a query is provided.",
+							"schema": map[string]interface{}{
+								"type":    "number",
+								"format":  "double",
+								"minimum": 0.0,
+								"maximum": 1.0,
 							},
 						},
 					},
@@ -461,12 +480,17 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 							"type":   "string",
 							"format": "date-time",
 						},
-						"expires_at": map[string]interface{}{
+						"expired_at": map[string]interface{}{
 							"type":   "string",
 							"format": "date-time",
 						},
 						"metadata": map[string]interface{}{
 							"type": "string",
+						},
+						"similarity": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Cosine similarity score (0.0-1.0), present when search includes a query",
 						},
 					},
 				},

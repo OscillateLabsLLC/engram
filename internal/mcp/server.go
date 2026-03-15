@@ -136,6 +136,10 @@ func (s *Server) registerTools() {
 					"type":        "boolean",
 					"description": "Include episodes that have been marked as expired (default: false). Optional.",
 				},
+				"min_similarity": map[string]interface{}{
+					"type":        "number",
+					"description": "Minimum cosine similarity threshold (0.0-1.0). Only results with similarity >= this value are returned. Only applies when a query is provided. Optional.",
+				},
 			},
 			Required: []string{},
 		},
@@ -300,6 +304,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		Tags           []string `json:"tags"`
 		Source         string   `json:"source"`
 		IncludeExpired bool     `json:"include_expired"`
+		MinSimilarity  float64  `json:"min_similarity"`
 	}
 
 	if err := parseParams(request.Params.Arguments, &params); err != nil {
@@ -348,6 +353,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		Tags:           params.Tags,
 		Source:         params.Source,
 		IncludeExpired: params.IncludeExpired,
+		MinSimilarity:  params.MinSimilarity,
 	}
 
 	episodes, err := s.store.Search(ctx, searchParams)

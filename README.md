@@ -18,7 +18,7 @@ Most AI memory systems couple write reliability to LLM availability by performin
 
 ## Features
 
-- **Semantic search** — results ranked by relevance using vector similarity, not recency
+- **Semantic search** — results ranked by relevance using vector similarity, with similarity scores and configurable threshold
 - **Graceful fallback** — works even when the embedding service is unavailable
 - **Fast queries** — DuckDB HNSW indexing for sub-100ms vector search
 - **Zero external APIs** — all embeddings generated locally via Ollama

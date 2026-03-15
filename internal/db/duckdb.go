@@ -214,17 +214,40 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 	var conditions []string
 	var args []interface{}
 	argIdx := 1
+	hasSemantic := len(params.QueryEmbedding) > 0
 
-	// Base query - embedding is excluded from SELECT (used only for ORDER BY scoring)
-	query := `
+	var embeddingJSON []byte
+	if hasSemantic {
+		var err error
+		embeddingJSON, err = json.Marshal(params.QueryEmbedding)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to marshal query embedding: %v\n", err)
+			hasSemantic = false
+		}
+	}
+
+	// Build inner query with similarity computed once
+	var innerSelect string
+	if hasSemantic {
+		innerSelect = fmt.Sprintf(`
 		SELECT id, content, name, source, source_model, source_description,
-		       group_id, tags, created_at, valid_at, expired_at, metadata
+		       group_id, tags, created_at, valid_at, expired_at, metadata,
+		       array_cosine_similarity(embedding, %s::FLOAT[768]) AS similarity
+		FROM episodes
+		WHERE 1=1
+	`, string(embeddingJSON))
+	} else {
+		innerSelect = `
+		SELECT id, content, name, source, source_model, source_description,
+		       group_id, tags, created_at, valid_at, expired_at, metadata,
+		       NULL AS similarity
 		FROM episodes
 		WHERE 1=1
 	`
+	}
 
-	// Filter out episodes without embeddings if we have a query embedding
-	if params.Query != "" {
+	// Only filter out NULL embeddings when we're actually doing semantic ranking
+	if hasSemantic {
 		conditions = append(conditions, "embedding IS NOT NULL")
 	}
 
@@ -268,26 +291,22 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		}
 	}
 
-	// Add conditions to query
+	// Add conditions to inner query
 	if len(conditions) > 0 {
-		query += " AND " + strings.Join(conditions, " AND ")
+		innerSelect += " AND " + strings.Join(conditions, " AND ")
 	}
 
-	// Order by semantic similarity if we have a query embedding, otherwise by created_at
-	if len(params.QueryEmbedding) > 0 {
-		// Convert embedding to JSON array format for DuckDB
-		embeddingJSON, err := json.Marshal(params.QueryEmbedding)
-		if err != nil {
-			// Fall back to temporal ordering if embedding conversion fails
-			fmt.Fprintf(os.Stderr, "Warning: Failed to marshal query embedding: %v\n", err)
-			query += " ORDER BY created_at DESC"
-		} else {
-			// Use VSS array_cosine_similarity for semantic ranking
-			// Higher similarity scores rank first (DESC order)
-			query += fmt.Sprintf(" ORDER BY array_cosine_similarity(embedding, %s::FLOAT[768]) DESC", string(embeddingJSON))
-		}
+	// Wrap in CTE so min_similarity filter and ORDER BY reference the
+	// already-computed similarity column instead of recomputing it.
+	query := "WITH scored AS (" + innerSelect + ") SELECT * FROM scored"
+
+	if hasSemantic && params.MinSimilarity > 0 {
+		query += fmt.Sprintf(" WHERE similarity >= %f", params.MinSimilarity)
+	}
+
+	if hasSemantic {
+		query += " ORDER BY similarity DESC"
 	} else {
-		// Fall back to temporal ordering when no query embedding available
 		query += " ORDER BY created_at DESC"
 	}
 
@@ -374,6 +393,18 @@ func (s *Store) UpdateEpisode(ctx context.Context, id string, params models.Upda
 	return nil
 }
 
+// CountEpisodes returns the total number of non-expired episodes
+func (s *Store) CountEpisodes(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM episodes WHERE expired_at IS NULL OR expired_at > CURRENT_TIMESTAMP",
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count episodes: %w", err)
+	}
+	return count, nil
+}
+
 // DeleteEpisode removes an episode from the store
 func (s *Store) DeleteEpisode(ctx context.Context, id string) error {
 	result, err := s.db.ExecContext(ctx, "DELETE FROM episodes WHERE id = ?", id)
@@ -448,13 +479,18 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) {
 	for rows.Next() {
 		var ep models.Episode
 		var tagsRaw, metadataRaw interface{}
+		var similarity sql.NullFloat64
 
 		err := rows.Scan(
 			&ep.ID, &ep.Content, &ep.Name, &ep.Source, &ep.SourceModel, &ep.SourceDescription,
 			&ep.GroupID, &tagsRaw, &ep.CreatedAt, &ep.ValidAt, &ep.ExpiredAt, &metadataRaw,
+			&similarity,
 		)
 		if err != nil {
 			return nil, err
+		}
+		if similarity.Valid {
+			ep.Similarity = &similarity.Float64
 		}
 
 		// Parse tags - DuckDB returns VARCHAR[] as []interface{}

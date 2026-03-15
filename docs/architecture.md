@@ -134,12 +134,10 @@ Deployment with PersistentVolume for the `.duckdb` file. Requires ingress config
 
 - **Hardcoded embedding dimension:** Schema uses `FLOAT[768]` (tied to `nomic-embed-text`)
 - **No hybrid ranking:** Pure semantic search, no temporal decay factor
-- **No similarity threshold:** Returns all results regardless of relevance score
 - **No full-text search:** Semantic search covers most use cases; FTS is a future enhancement
 
 ## Future Roadmap
 
-- Similarity score in search results and `min_similarity` threshold (v2.1)
 - Full-text search and hybrid search mode (v2.2)
 - Layer 2 knowledge graph with entity extraction (v3)
 - Memory consolidation and summarization via Dreamer service (v3)
