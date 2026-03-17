@@ -83,14 +83,13 @@ engram/
 
 ### Commits
 
-Use clear, descriptive commit messages:
+Use [conventional commit](https://www.conventionalcommits.org/) messages (release-please depends on this):
 
 ```text
-Add semantic search filtering by tags
-
-- Implement tag filtering in search queries
-- Add tests for tag-based search
-- Update documentation
+feat: add semantic search filtering by tags
+fix: handle nil embedding in search results
+docs: update MCP configuration examples
+chore: update Go dependencies
 ```
 
 ### Pull Requests

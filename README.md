@@ -190,7 +190,7 @@ For a deeper dive into the architecture, see [`docs/architecture.md`](docs/archi
 
 ## Testing
 
-The project includes comprehensive unit tests:
+The project includes unit and integration tests:
 
 ```bash
 # Run all tests
