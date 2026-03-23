@@ -39,6 +39,7 @@ type SearchRequest struct {
 	MinSimilarity  float64  `json:"min_similarity,omitempty"`
 	SearchMode     string   `json:"search_mode,omitempty"`
 	SearchAlpha    float64  `json:"search_alpha,omitempty"`
+	TagBoost       float64  `json:"tag_boost,omitempty"`
 }
 
 // GetEpisodesRequest represents query parameters for getting episodes
@@ -167,6 +168,9 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if tags := r.URL.Query().Get("tags"); tags != "" {
 			req.Tags = strings.Split(tags, ",")
 		}
+		if tagBoost := r.URL.Query().Get("tag_boost"); tagBoost != "" {
+			fmt.Sscanf(tagBoost, "%f", &req.TagBoost)
+		}
 	}
 
 	// Validate search_mode
@@ -237,6 +241,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		MinSimilarity:  req.MinSimilarity,
 		SearchMode:     req.SearchMode,
 		SearchAlpha:    req.SearchAlpha,
+		TagBoost:       req.TagBoost,
 	})
 
 	if err != nil {

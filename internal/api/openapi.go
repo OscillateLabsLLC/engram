@@ -153,7 +153,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 						{
 							"name":        "tags",
 							"in":          "query",
-							"description": "Comma-separated tags to filter by (AND logic)",
+							"description": "Comma-separated tags. By default uses AND logic to hard-filter. When tag_boost > 0, tags boost matching results without excluding others.",
 							"schema": map[string]interface{}{
 								"type": "string",
 							},
@@ -198,6 +198,18 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 								"minimum": 0.0,
 								"maximum": 1.0,
 								"default": 0.7,
+							},
+						},
+						{
+							"name":        "tag_boost",
+							"in":          "query",
+							"description": "When > 0, tags boost rather than filter: results with matching tags rank higher but untagged results are still returned. 0.0 (default) = tags are hard AND filters.",
+							"schema": map[string]interface{}{
+								"type":    "number",
+								"format":  "double",
+								"minimum": 0.0,
+								"maximum": 2.0,
+								"default": 0.0,
 							},
 						},
 					},
@@ -512,7 +524,12 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 						"similarity": map[string]interface{}{
 							"type":        "number",
 							"format":      "double",
-							"description": "Cosine similarity score (0.0-1.0), present when search includes a query",
+							"description": "Raw cosine similarity score (0.0-1.0), present when search includes a query embedding",
+						},
+						"relevance": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Ranking score used to order results. Without tag_boost, range is [0, 1]. With tag_boost, range is [0, 1 + tag_boost] since the boost is additive. In vector mode: min-max normalized cosine. In hybrid mode: blended normalized cosine + BM25. In keyword mode: normalized BM25.",
 						},
 					},
 				},

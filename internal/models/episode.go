@@ -18,6 +18,7 @@ type Episode struct {
 	ExpiredAt         *time.Time `json:"expired_at,omitempty"`
 	Metadata          string     `json:"metadata,omitempty"` // JSON string
 	Similarity        *float64   `json:"similarity,omitempty"`
+	Relevance         *float64   `json:"relevance,omitempty"`
 }
 
 // SearchParams defines parameters for searching episodes
@@ -34,6 +35,7 @@ type SearchParams struct {
 	MinSimilarity  float64    `json:"min_similarity,omitempty"` // Minimum cosine similarity threshold (0.0-1.0)
 	SearchMode     string     `json:"search_mode,omitempty"`    // "vector" (default), "keyword", or "hybrid"
 	SearchAlpha    float64    `json:"search_alpha,omitempty"`   // Hybrid weighting: 0.0 = BM25 only, 1.0 = cosine only (default: 0.7)
+	TagBoost       float64    `json:"tag_boost,omitempty"`      // 0.0 = hard filter (default), >0 = boost tag matches by this weight
 }
 
 // UpdateParams defines parameters for updating an episode

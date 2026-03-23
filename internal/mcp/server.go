@@ -151,6 +151,12 @@ func (s *Server) registerTools() {
 					"minimum":     0.0,
 					"maximum":     1.0,
 				},
+				"tag_boost": map[string]interface{}{
+					"type":        "number",
+					"description": "When > 0, tags boost rather than filter: results with matching tags rank higher but untagged results are still returned. 0.0 (default) = tags are hard AND filters that exclude non-matching episodes.",
+					"minimum":     0.0,
+					"maximum":     2.0,
+				},
 			},
 			Required: []string{},
 		},
@@ -318,6 +324,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		MinSimilarity  float64  `json:"min_similarity"`
 		SearchMode     string   `json:"search_mode"`
 		SearchAlpha    float64  `json:"search_alpha"`
+		TagBoost       float64  `json:"tag_boost"`
 	}
 
 	if err := parseParams(request.Params.Arguments, &params); err != nil {
@@ -381,6 +388,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		MinSimilarity:  params.MinSimilarity,
 		SearchMode:     params.SearchMode,
 		SearchAlpha:    params.SearchAlpha,
+		TagBoost:       params.TagBoost,
 	}
 
 	episodes, err := s.store.Search(ctx, searchParams)
