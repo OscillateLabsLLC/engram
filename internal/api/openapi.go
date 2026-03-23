@@ -529,7 +529,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 						"relevance": map[string]interface{}{
 							"type":        "number",
 							"format":      "double",
-							"description": "Ranking score used to order results. Without tag_boost, range is [0, 1]. With tag_boost, range is [0, 1 + tag_boost] since the boost is additive. In vector mode: min-max normalized cosine. In hybrid mode: blended normalized cosine + BM25. In keyword mode: normalized BM25.",
+							"description": "Ranking score used to order results. Without tag_boost, range is [0, 1]. With tag_boost, range is [0, 1 + tag_boost] since the boost is additive. In vector mode: min-max normalized cosine. In hybrid mode: blended normalized cosine + BM25. In keyword mode: normalized BM25. ILIKE fallback results (keyword mode, numeric tokens) return a fixed relevance of 1.0 since fallback matches are unranked.",
 						},
 					},
 				},
