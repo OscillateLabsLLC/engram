@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.0](https://github.com/OscillateLabsLLC/engram/compare/v2.2.2...v2.3.0) (2026-03-23)
+
+
+### Features
+
+* improve search ranking with cosine normalization and tag boosting ([6378845](https://github.com/OscillateLabsLLC/engram/commit/637884533b3411c8976cee057efc462855549d33))
+* improve search ranking with cosine normalization and tag boosting ([3729150](https://github.com/OscillateLabsLLC/engram/commit/3729150de52d0651bab13dd38af7171ef26524ad))
+
 ## [2.2.2](https://github.com/OscillateLabsLLC/engram/compare/v2.2.1...v2.2.2) (2026-03-15)
 
 
