@@ -215,6 +215,22 @@ func (s *Server) registerTools() {
 		},
 	}, s.handleUpdateEpisode)
 
+	// delete_episode tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "delete_episode",
+		Description: "Permanently delete an episode by ID. Use update_episode with expired_at for soft-delete instead when you may want to recover the episode later.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"id": map[string]interface{}{
+					"type":        "string",
+					"description": "Episode ID to delete",
+				},
+			},
+			Required: []string{"id"},
+		},
+	}, s.handleDeleteEpisode)
+
 	// get_status tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "get_status",
@@ -471,6 +487,27 @@ func (s *Server) handleUpdateEpisode(ctx context.Context, request mcp.CallToolRe
 	result, _ := json.Marshal(map[string]interface{}{
 		"success": true,
 		"message": "Episode updated successfully",
+	})
+
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (s *Server) handleDeleteEpisode(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		ID string `json:"id"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+
+	if err := s.store.DeleteEpisode(ctx, params.ID); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to delete episode: %v", err)), nil
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"success": true,
+		"message": "Episode deleted successfully",
 	})
 
 	return mcp.NewToolResultText(string(result)), nil
