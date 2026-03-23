@@ -537,7 +537,9 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 }
 
 // contentFallbackSearch performs an ILIKE content search as a fallback when BM25
-// cannot match the query (e.g. pure numeric tokens). Returns results with similarity nil.
+// cannot match the query (e.g. pure numeric tokens). Returns results with similarity
+// nil and relevance hardcoded to 1.0 — ILIKE is a binary match with no ranking signal,
+// so all fallback results are treated as equally relevant.
 func (s *Store) contentFallbackSearch(ctx context.Context, params models.SearchParams) ([]models.Episode, error) {
 	var conditions []string
 	var args []interface{}
