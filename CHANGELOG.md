@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.0](https://github.com/OscillateLabsLLC/engram/compare/v2.3.0...v2.4.0) (2026-03-23)
+
+
+### Features
+
+* keyword search ILIKE fallback for numeric tokens ([5f6b318](https://github.com/OscillateLabsLLC/engram/commit/5f6b318bb5faaa8c50ad5d90ea73d7094d4b2c14))
+* keyword search ILIKE fallback for numeric tokens ([8fa01cc](https://github.com/OscillateLabsLLC/engram/commit/8fa01cc23e64cb8cad428272de445a04798fb3af))
+
 ## [2.3.0](https://github.com/OscillateLabsLLC/engram/compare/v2.2.2...v2.3.0) (2026-03-23)
 
 
