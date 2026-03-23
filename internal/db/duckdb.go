@@ -517,6 +517,85 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		return nil, fmt.Errorf("failed to execute search query: %w", err)
 	}
 	defer rows.Close()
+
+	episodes, err := s.scanEpisodes(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Keyword fallback: BM25 cannot index pure numeric tokens (DuckDB FTS limitation).
+	// When keyword mode returns no results and the query is non-empty, fall back to
+	// ILIKE content search to catch account IDs, ticket numbers, and other identifiers.
+	if len(episodes) == 0 && mode == "keyword" && params.Query != "" {
+		episodes, err = s.contentFallbackSearch(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return episodes, nil
+}
+
+// contentFallbackSearch performs an ILIKE content search as a fallback when BM25
+// cannot match the query (e.g. pure numeric tokens). Returns results with similarity nil.
+func (s *Store) contentFallbackSearch(ctx context.Context, params models.SearchParams) ([]models.Episode, error) {
+	var conditions []string
+	var args []interface{}
+	argIdx := 1
+
+	// ILIKE match on content and name
+	conditions = append(conditions, fmt.Sprintf("(content ILIKE $%d OR name ILIKE $%d)", argIdx, argIdx))
+	args = append(args, "%"+params.Query+"%")
+	argIdx++
+
+	// Apply the same filters as the main search
+	if params.GroupID != "" {
+		conditions = append(conditions, fmt.Sprintf("group_id = $%d", argIdx))
+		args = append(args, params.GroupID)
+		argIdx++
+	}
+	if params.Before != nil {
+		conditions = append(conditions, fmt.Sprintf("created_at < $%d", argIdx))
+		args = append(args, *params.Before)
+		argIdx++
+	}
+	if params.After != nil {
+		conditions = append(conditions, fmt.Sprintf("created_at > $%d", argIdx))
+		args = append(args, *params.After)
+		argIdx++
+	}
+	if !params.IncludeExpired {
+		conditions = append(conditions, "(expired_at IS NULL OR expired_at > CURRENT_TIMESTAMP)")
+	}
+	if params.Source != "" {
+		conditions = append(conditions, fmt.Sprintf("source = $%d", argIdx))
+		args = append(args, params.Source)
+		argIdx++
+	}
+	if len(params.Tags) > 0 {
+		for _, tag := range params.Tags {
+			conditions = append(conditions, fmt.Sprintf("list_contains(tags, $%d)", argIdx))
+			args = append(args, tag)
+			argIdx++
+		}
+	}
+
+	where := strings.Join(conditions, " AND ")
+	limit := params.MaxResults
+	if limit <= 0 {
+		limit = 10
+	}
+
+	query := fmt.Sprintf(
+		"SELECT %s, NULL AS similarity, 1.0 AS relevance FROM episodes WHERE %s ORDER BY created_at DESC LIMIT %d",
+		episodeCols, where, limit,
+	)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute fallback search: %w", err)
+	}
+	defer rows.Close()
 	return s.scanEpisodes(rows)
 }
 

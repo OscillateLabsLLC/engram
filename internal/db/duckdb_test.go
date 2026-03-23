@@ -1397,6 +1397,78 @@ func TestRelevanceMonotonic(t *testing.T) {
 	})
 }
 
+func TestSearchKeywordNumericFallback(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	episodes := []*models.Episode{
+		{Content: "Dev account 123456789012 in us-east-2", Source: "test", GroupID: "g1"},
+		{Content: "Prod account 987654321098 in us-east-2", Source: "test", GroupID: "g1"},
+		{Content: "Unrelated episode about databases", Source: "test", GroupID: "g1"},
+	}
+	for _, ep := range episodes {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	t.Run("numeric account ID found via fallback", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "123456789012",
+			SearchMode: "keyword",
+			GroupID:    "g1",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("Expected 1 result for numeric ID, got %d", len(results))
+		}
+		if !containsWord(results[0].Content, "123456789012") {
+			t.Errorf("Expected episode containing account ID, got %q", results[0].Content)
+		}
+		if results[0].Relevance == nil || *results[0].Relevance != 1.0 {
+			t.Errorf("Expected relevance 1.0 for fallback match, got %v", results[0].Relevance)
+		}
+	})
+
+	t.Run("text keywords still use BM25 not fallback", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "databases",
+			SearchMode: "keyword",
+			GroupID:    "g1",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 1 {
+			t.Fatalf("Expected 1 BM25 result, got %d", len(results))
+		}
+		if !containsWord(results[0].Content, "databases") {
+			t.Errorf("Expected databases episode, got %q", results[0].Content)
+		}
+	})
+
+	t.Run("fallback respects group filter", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "123456789012",
+			SearchMode: "keyword",
+			GroupID:    "nonexistent",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 0 {
+			t.Errorf("Expected 0 results with wrong group, got %d", len(results))
+		}
+	})
+}
+
 // containsWord checks if text contains a word (case-insensitive)
 func containsWord(text, word string) bool {
 	lower := strings.ToLower(text)
