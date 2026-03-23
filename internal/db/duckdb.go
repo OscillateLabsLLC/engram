@@ -301,6 +301,19 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		hasSemantic = false
 	}
 
+	// Handle tag boost: build computed column with bind params before other conditions
+	hasTagBoost := len(params.Tags) > 0 && params.TagBoost > 0
+	var tagBoostExpr string
+	if hasTagBoost {
+		var tagChecks []string
+		for _, tag := range params.Tags {
+			tagChecks = append(tagChecks, fmt.Sprintf("CAST(list_contains(tags, $%d) AS INTEGER)", argIdx))
+			args = append(args, tag)
+			argIdx++
+		}
+		tagBoostExpr = fmt.Sprintf("(%s) * 1.0 / %d.0", strings.Join(tagChecks, " + "), len(params.Tags))
+	}
+
 	// Build the computed columns (similarity, bm25) based on mode
 	hasBM25 := needsFTS && params.Query != ""
 	var computedCols string
@@ -322,6 +335,11 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 	default:
 		computedCols = `,
 			NULL AS similarity`
+	}
+
+	// Add tag_match_ratio as computed column when boosting
+	if hasTagBoost {
+		computedCols += fmt.Sprintf(", %s AS tag_match_ratio", tagBoostExpr)
 	}
 
 	innerSelect := fmt.Sprintf("SELECT %s%s FROM episodes WHERE 1=1", episodeCols, computedCols)
@@ -362,8 +380,8 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		argIdx++
 	}
 
-	// Tags filter (all tags must be present)
-	if len(params.Tags) > 0 {
+	// Tags filter: hard AND when TagBoost=0, skip when boosting (handled as computed column)
+	if len(params.Tags) > 0 && !hasTagBoost {
 		for _, tag := range params.Tags {
 			conditions = append(conditions, fmt.Sprintf("list_contains(tags, $%d)", argIdx))
 			args = append(args, tag)
@@ -376,19 +394,34 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 		innerSelect += " AND " + strings.Join(conditions, " AND ")
 	}
 
-	// Standard result columns for the outer SELECT (always 13 columns for scanEpisodes)
-	outerCols := episodeCols + ", similarity"
+	// Tag boost addend for ORDER BY / relevance computation
+	tagBoostAddend := ""
+	if hasTagBoost {
+		tagBoostAddend = fmt.Sprintf(" + %f * COALESCE(s.tag_match_ratio, 0.0)", params.TagBoost)
+	}
 
 	// Build the final query based on mode
+	// All paths return: episodeCols, similarity, relevance (14 columns for scanEpisodes)
 	var query string
 	switch {
 	case mode == "keyword" && hasBM25:
-		query = fmt.Sprintf("WITH scored AS (%s) SELECT %s FROM scored WHERE bm25_score IS NOT NULL ORDER BY bm25_score DESC",
-			innerSelect, outerCols)
+		query = fmt.Sprintf(`WITH scored AS (%s),
+			bm25_stats AS (
+				SELECT MIN(bm25_score) AS min_bm25, MAX(bm25_score) AS max_bm25
+				FROM scored WHERE bm25_score IS NOT NULL
+			)
+			SELECT %s, s.similarity,
+			       CASE WHEN b.max_bm25 = b.min_bm25 THEN 1.0
+			            WHEN s.bm25_score IS NOT NULL THEN
+			                (s.bm25_score - b.min_bm25) / (b.max_bm25 - b.min_bm25)
+			            ELSE 0.0 END%s AS relevance
+			FROM scored s, bm25_stats b
+			WHERE s.bm25_score IS NOT NULL
+			ORDER BY relevance DESC`,
+			innerSelect, episodeCols, tagBoostAddend)
 
 	case mode == "hybrid" && hasBM25:
 		// Default alpha to 0.7 when not explicitly set (Go zero-value).
-		// alpha=0.0 is not a valid user choice for hybrid mode — use keyword mode for pure BM25.
 		alpha := params.SearchAlpha
 		if alpha == 0 {
 			alpha = 0.7
@@ -400,6 +433,10 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 					SELECT MIN(bm25_score) AS min_bm25, MAX(bm25_score) AS max_bm25
 					FROM scored WHERE bm25_score IS NOT NULL
 				),
+				cosine_stats AS (
+					SELECT MIN(similarity) AS min_cos, MAX(similarity) AS max_cos
+					FROM scored WHERE similarity IS NOT NULL
+				),
 				hybrid AS (
 					SELECT s.*,
 					       CASE
@@ -409,30 +446,62 @@ func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]model
 					               (s.bm25_score - b.min_bm25) / (b.max_bm25 - b.min_bm25)
 					           ELSE 0.0
 					       END AS norm_bm25,
-					       COALESCE(s.similarity, 0.0) AS cosine_score
-					FROM scored s, bm25_stats b
+					       CASE
+					           WHEN c.max_cos = c.min_cos THEN
+					               CASE WHEN s.similarity IS NOT NULL THEN 1.0 ELSE 0.0 END
+					           WHEN s.similarity IS NOT NULL THEN
+					               (s.similarity - c.min_cos) / (c.max_cos - c.min_cos)
+					           ELSE 0.0
+					       END AS norm_cosine
+					FROM scored s, bm25_stats b, cosine_stats c
 					WHERE s.bm25_score IS NOT NULL OR s.similarity IS NOT NULL
 				)
-				SELECT %s FROM hybrid
-				ORDER BY (%f * cosine_score + %f * norm_bm25) DESC`,
-				innerSelect, outerCols, alpha, 1.0-alpha)
+				SELECT %s, similarity,
+				       (%f * norm_cosine + %f * norm_bm25)%s AS relevance
+				FROM hybrid s
+				ORDER BY relevance DESC`,
+				innerSelect, episodeCols, alpha, 1.0-alpha, tagBoostAddend)
 		} else {
 			// No embedding — hybrid degrades to keyword
-			query = fmt.Sprintf("WITH scored AS (%s) SELECT %s FROM scored WHERE bm25_score IS NOT NULL ORDER BY bm25_score DESC",
-				innerSelect, outerCols)
+			query = fmt.Sprintf(`WITH scored AS (%s),
+				bm25_stats AS (
+					SELECT MIN(bm25_score) AS min_bm25, MAX(bm25_score) AS max_bm25
+					FROM scored WHERE bm25_score IS NOT NULL
+				)
+				SELECT %s, s.similarity,
+				       CASE WHEN b.max_bm25 = b.min_bm25 THEN 1.0
+				            WHEN s.bm25_score IS NOT NULL THEN
+				                (s.bm25_score - b.min_bm25) / (b.max_bm25 - b.min_bm25)
+				            ELSE 0.0 END%s AS relevance
+				FROM scored s, bm25_stats b
+				WHERE s.bm25_score IS NOT NULL
+				ORDER BY relevance DESC`,
+				innerSelect, episodeCols, tagBoostAddend)
 		}
 
 	default: // vector mode, or any mode without a query
-		query = "WITH scored AS (" + innerSelect + ") SELECT * FROM scored"
-
-		if hasSemantic && params.MinSimilarity > 0 {
-			query += fmt.Sprintf(" WHERE similarity >= %f", params.MinSimilarity)
-		}
-
 		if hasSemantic {
-			query += " ORDER BY similarity DESC"
+			query = fmt.Sprintf(`WITH scored AS (%s),
+				cosine_stats AS (
+					SELECT MIN(similarity) AS min_cos, MAX(similarity) AS max_cos
+					FROM scored WHERE similarity IS NOT NULL
+				)
+				SELECT %s, s.similarity,
+				       CASE WHEN c.max_cos = c.min_cos THEN
+				               CASE WHEN s.similarity IS NOT NULL THEN 1.0 ELSE NULL END
+				            WHEN s.similarity IS NOT NULL THEN
+				               (s.similarity - c.min_cos) / (c.max_cos - c.min_cos)
+				            ELSE NULL END%s AS relevance
+				FROM scored s, cosine_stats c`,
+				innerSelect, episodeCols, tagBoostAddend)
+
+			if params.MinSimilarity > 0 {
+				query += fmt.Sprintf(" WHERE s.similarity >= %f", params.MinSimilarity)
+			}
+			query += " ORDER BY relevance DESC"
 		} else {
-			query += " ORDER BY created_at DESC"
+			query = fmt.Sprintf("WITH scored AS (%s) SELECT %s, s.similarity, NULL AS relevance FROM scored s ORDER BY s.created_at DESC",
+				innerSelect, episodeCols)
 		}
 	}
 
@@ -672,18 +741,21 @@ func (s *Store) scanEpisodes(rows *sql.Rows) ([]models.Episode, error) {
 	for rows.Next() {
 		var ep models.Episode
 		var tagsRaw, metadataRaw interface{}
-		var similarity sql.NullFloat64
+		var similarity, relevance sql.NullFloat64
 
 		err := rows.Scan(
 			&ep.ID, &ep.Content, &ep.Name, &ep.Source, &ep.SourceModel, &ep.SourceDescription,
 			&ep.GroupID, &tagsRaw, &ep.CreatedAt, &ep.ValidAt, &ep.ExpiredAt, &metadataRaw,
-			&similarity,
+			&similarity, &relevance,
 		)
 		if err != nil {
 			return nil, err
 		}
 		if similarity.Valid {
 			ep.Similarity = &similarity.Float64
+		}
+		if relevance.Valid {
+			ep.Relevance = &relevance.Float64
 		}
 
 		// Parse tags - DuckDB returns VARCHAR[] as []interface{}

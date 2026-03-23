@@ -1007,6 +1007,396 @@ func TestSanitizeFTSQuery(t *testing.T) {
 	}
 }
 
+func TestSearchRelevanceField(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create embeddings with known similarity properties
+	embed1 := make([]float32, 768)
+	embed1[0] = 1.0 // High match
+
+	embed2 := make([]float32, 768)
+	embed2[0] = 0.5
+	embed2[1] = 0.5 // Medium match
+
+	embed3 := make([]float32, 768)
+	embed3[1] = 1.0 // Low match
+
+	episodes := []*models.Episode{
+		{Content: "Highly relevant result", Source: "test", Embedding: embed1},
+		{Content: "Moderately relevant result", Source: "test", Embedding: embed2},
+		{Content: "Least relevant result", Source: "test", Embedding: embed3},
+	}
+	for _, ep := range episodes {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	queryEmbed := make([]float32, 768)
+	queryEmbed[0] = 1.0
+
+	t.Run("vector mode populates relevance with normalized scores", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 3 {
+			t.Fatalf("Expected 3 results, got %d", len(results))
+		}
+
+		// All results should have relevance populated
+		for i, r := range results {
+			if r.Relevance == nil {
+				t.Fatalf("Result %d: expected relevance, got nil", i)
+			}
+			if r.Similarity == nil {
+				t.Fatalf("Result %d: expected similarity, got nil", i)
+			}
+		}
+
+		// Top result should have relevance ~1.0 (normalized max)
+		if *results[0].Relevance < 0.9 {
+			t.Errorf("Top result relevance should be ~1.0, got %f", *results[0].Relevance)
+		}
+
+		// Last result should have relevance ~0.0 (normalized min)
+		if *results[2].Relevance > 0.1 {
+			t.Errorf("Last result relevance should be ~0.0, got %f", *results[2].Relevance)
+		}
+
+		// Raw similarity should still be populated (backwards compatibility)
+		if *results[0].Similarity < *results[1].Similarity {
+			t.Errorf("Raw similarity ordering broken: %f < %f", *results[0].Similarity, *results[1].Similarity)
+		}
+	})
+
+	t.Run("no query returns nil relevance", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		for i, r := range results {
+			if r.Relevance != nil {
+				t.Errorf("Result %d: expected nil relevance without query, got %f", i, *r.Relevance)
+			}
+		}
+	})
+}
+
+func TestSearchHybridNormalization(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	embed1 := make([]float32, 768)
+	embed1[0] = 1.0
+
+	embed2 := make([]float32, 768)
+	embed2[1] = 1.0
+
+	episodes := []*models.Episode{
+		{Content: "The fox runs through the forest quickly", Source: "test", Embedding: embed1},
+		{Content: "A cat sleeps peacefully on the couch", Source: "test", Embedding: embed2},
+	}
+	for _, ep := range episodes {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+	}
+
+	queryEmbed := make([]float32, 768)
+	queryEmbed[0] = 1.0
+
+	results, err := store.Search(ctx, models.SearchParams{
+		Query:          "fox",
+		QueryEmbedding: queryEmbed,
+		SearchMode:     "hybrid",
+		SearchAlpha:    0.5,
+		MaxResults:     10,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("Expected results")
+	}
+
+	// All results should have relevance populated
+	for i, r := range results {
+		if r.Relevance == nil {
+			t.Errorf("Result %d: expected relevance in hybrid mode, got nil", i)
+		}
+	}
+
+	// Fox episode should rank first (both keyword match and cosine match)
+	if !containsWord(results[0].Content, "fox") {
+		t.Errorf("Expected fox episode first in hybrid mode, got %q", results[0].Content)
+	}
+}
+
+func TestSearchTagBoost(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	embed1 := make([]float32, 768)
+	embed1[0] = 0.7
+	embed1[1] = 0.3
+
+	embed2 := make([]float32, 768)
+	embed2[0] = 1.0
+
+	// Episode with tags but noticeably lower similarity
+	ep1 := &models.Episode{
+		Content:   "Tagged and relevant content",
+		Source:    "test",
+		Tags:      []string{"important", "review"},
+		Embedding: embed1,
+	}
+	// Episode without tags but highest similarity
+	ep2 := &models.Episode{
+		Content:   "Untagged but very similar content",
+		Source:    "test",
+		Embedding: embed2,
+	}
+
+	store.InsertEpisode(ctx, ep1)
+	store.InsertEpisode(ctx, ep2)
+
+	queryEmbed := make([]float32, 768)
+	queryEmbed[0] = 1.0
+
+	t.Run("tag_boost=0 hard filters (default behavior)", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			Tags:           []string{"important"},
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		// Hard filter: only tagged episode returned
+		if len(results) != 1 {
+			t.Fatalf("Expected 1 result with hard filter, got %d", len(results))
+		}
+		if results[0].Content != ep1.Content {
+			t.Errorf("Expected tagged episode, got %q", results[0].Content)
+		}
+	})
+
+	t.Run("tag_boost>0 returns all but boosts tagged", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			Tags:           []string{"important"},
+			TagBoost:       1.5,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		// Both episodes returned
+		if len(results) != 2 {
+			t.Fatalf("Expected 2 results with tag boost, got %d", len(results))
+		}
+		// Tagged episode should rank first due to boost despite lower raw similarity
+		if results[0].Content != ep1.Content {
+			t.Errorf("Expected tagged episode first with boost, got %q", results[0].Content)
+		}
+	})
+
+	t.Run("tag_boost with keyword mode", func(t *testing.T) {
+		epA := &models.Episode{
+			Content: "Alpha database testing framework",
+			Source:  "test",
+			Tags:    []string{"dev"},
+		}
+		epB := &models.Episode{
+			Content: "Alpha release notes for production",
+			Source:  "test",
+			Tags:    []string{"release"},
+		}
+		store.InsertEpisode(ctx, epA)
+		store.InsertEpisode(ctx, epB)
+
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "Alpha",
+			SearchMode: "keyword",
+			Tags:       []string{"release"},
+			TagBoost:   0.5,
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		// Both Alpha episodes should be returned
+		if len(results) < 2 {
+			t.Fatalf("Expected at least 2 results, got %d", len(results))
+		}
+		// The "release" tagged one should rank higher
+		if !containsWord(results[0].Content, "release") {
+			t.Errorf("Expected release episode first with tag boost, got %q", results[0].Content)
+		}
+	})
+
+	t.Run("partial tag match produces intermediate boost", func(t *testing.T) {
+		// Episode with 2/2 tags, 1/2 tags, and 0/2 tags — all same embedding
+		sameEmbed := make([]float32, 768)
+		sameEmbed[0] = 0.5
+		sameEmbed[1] = 0.5
+
+		epFull := &models.Episode{
+			Content:   "Full tag match episode for partial test",
+			Source:    "test",
+			Tags:      []string{"alpha", "beta"},
+			Embedding: sameEmbed,
+		}
+		epPartial := &models.Episode{
+			Content:   "Partial tag match episode for partial test",
+			Source:    "test",
+			Tags:      []string{"alpha"},
+			Embedding: sameEmbed,
+		}
+		epNone := &models.Episode{
+			Content:   "No tag match episode for partial test",
+			Source:    "test",
+			Tags:      []string{"gamma"},
+			Embedding: sameEmbed,
+		}
+		store.InsertEpisode(ctx, epFull)
+		store.InsertEpisode(ctx, epPartial)
+		store.InsertEpisode(ctx, epNone)
+
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			Tags:           []string{"alpha", "beta"},
+			TagBoost:       1.0,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+
+		// Find our three test episodes by content prefix
+		var fullRel, partialRel, noneRel *float64
+		for _, r := range results {
+			if containsWord(r.Content, "Full tag match") {
+				fullRel = r.Relevance
+			} else if containsWord(r.Content, "Partial tag match") {
+				partialRel = r.Relevance
+			} else if containsWord(r.Content, "No tag match") {
+				noneRel = r.Relevance
+			}
+		}
+
+		if fullRel == nil || partialRel == nil || noneRel == nil {
+			t.Fatalf("Could not find all three test episodes in results (got %d total)", len(results))
+		}
+
+		// Full match (2/2 = 1.0 ratio) should beat partial (1/2 = 0.5 ratio)
+		if *fullRel <= *partialRel {
+			t.Errorf("Full tag match relevance (%f) should exceed partial (%f)", *fullRel, *partialRel)
+		}
+		// Partial (1/2 = 0.5 ratio) should beat none (0/2 = 0.0 ratio)
+		if *partialRel <= *noneRel {
+			t.Errorf("Partial tag match relevance (%f) should exceed no match (%f)", *partialRel, *noneRel)
+		}
+	})
+}
+
+func TestRelevanceMonotonic(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Insert episodes with tags and embeddings for all modes
+	embed1 := make([]float32, 768)
+	embed1[0] = 1.0
+	embed2 := make([]float32, 768)
+	embed2[0] = 0.5
+	embed2[1] = 0.5
+	embed3 := make([]float32, 768)
+	embed3[1] = 1.0
+
+	episodes := []*models.Episode{
+		{Content: "Alpha keyword match content", Source: "test", Tags: []string{"target"}, Embedding: embed1},
+		{Content: "Beta keyword match content", Source: "test", Tags: []string{"other"}, Embedding: embed2},
+		{Content: "Gamma unrelated content here", Source: "test", Embedding: embed3},
+	}
+	for _, ep := range episodes {
+		store.InsertEpisode(ctx, ep)
+	}
+
+	queryEmbed := make([]float32, 768)
+	queryEmbed[0] = 1.0
+
+	assertMonotonic := func(t *testing.T, results []models.Episode) {
+		t.Helper()
+		for i := 1; i < len(results); i++ {
+			if results[i-1].Relevance == nil || results[i].Relevance == nil {
+				continue
+			}
+			if *results[i-1].Relevance < *results[i].Relevance {
+				t.Errorf("Relevance not monotonic: result[%d]=%f < result[%d]=%f",
+					i-1, *results[i-1].Relevance, i, *results[i].Relevance)
+			}
+		}
+	}
+
+	t.Run("vector mode with tag_boost", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			QueryEmbedding: queryEmbed,
+			Tags:           []string{"target"},
+			TagBoost:       0.5,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		assertMonotonic(t, results)
+	})
+
+	t.Run("keyword mode with tag_boost", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:      "keyword",
+			SearchMode: "keyword",
+			Tags:       []string{"target"},
+			TagBoost:   0.5,
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		assertMonotonic(t, results)
+	})
+
+	t.Run("hybrid mode with tag_boost", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{
+			Query:          "keyword",
+			QueryEmbedding: queryEmbed,
+			SearchMode:     "hybrid",
+			Tags:           []string{"target"},
+			TagBoost:       0.5,
+			MaxResults:     10,
+		})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		assertMonotonic(t, results)
+	})
+}
+
 // containsWord checks if text contains a word (case-insensitive)
 func containsWord(text, word string) bool {
 	lower := strings.ToLower(text)
