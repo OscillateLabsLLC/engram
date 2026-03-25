@@ -796,39 +796,72 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 		similarityThreshold = 0.88
 	}
 
-	// If we have an embedding, check for an existing matching entity
-	if len(entity.Embedding) > 0 {
-		embJSON, _ := json.Marshal(entity.Embedding)
-		groupFilter := "default"
-		if entity.GroupID != "" {
-			groupFilter = entity.GroupID
+	groupFilter := "default"
+	if entity.GroupID != "" {
+		groupFilter = entity.GroupID
+	}
+
+	// Entity resolution uses two string-based strategies:
+	// 1. Case-insensitive exact match: "Mike" = "mike"
+	// 2. Normalized match (strip non-alphanumeric, lowercase): "OscillateLabs" = "Oscillate Labs"
+	//
+	// Embedding-based resolution is NOT used for entity names. nomic-embed-text
+	// produces degenerate embeddings for short texts — "Mike" vs "DuckDB" scores
+	// 0.9594, same as "Mike" vs "Oscillate Labs". The embedding space is unusable
+	// for distinguishing entity names. Embeddings are still stored on entities for
+	// future use with longer-context models.
+	var existingID, existingName, existingType string
+	var existingCreatedAt time.Time
+
+	// First pass: case-insensitive exact name match
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, canonical_name, entity_type, created_at
+		FROM entities
+		WHERE LOWER(canonical_name) = LOWER(?)
+		  AND group_id = ?
+		LIMIT 1
+	`, entity.CanonicalName, groupFilter).Scan(&existingID, &existingName, &existingType, &existingCreatedAt)
+
+	if err == nil {
+		return &models.Entity{
+			ID:            existingID,
+			CanonicalName: existingName,
+			EntityType:    existingType,
+			GroupID:       groupFilter,
+			CreatedAt:     existingCreatedAt,
+		}, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("failed to check entity name match: %w", err)
+	}
+
+	// Second pass: normalized match — strip non-alphanumeric chars and compare.
+	// Catches "OscillateLabs" vs "Oscillate Labs" vs "Oscillate Labs LLC"
+	normalizedName := normalizeEntityName(entity.CanonicalName)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, canonical_name, entity_type, created_at
+		FROM entities
+		WHERE group_id = ?
+	`, groupFilter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query entities for normalized match: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var candID, candName, candType string
+		var candCreatedAt time.Time
+		if err := rows.Scan(&candID, &candName, &candType, &candCreatedAt); err != nil {
+			continue
 		}
-
-		var existingID, existingName, existingType string
-		var existingCreatedAt time.Time
-		err := s.db.QueryRowContext(ctx, `
-			SELECT id, canonical_name, entity_type, created_at
-			FROM entities
-			WHERE embedding IS NOT NULL
-			  AND group_id = ?
-			  AND array_cosine_similarity(embedding, `+string(embJSON)+`::FLOAT[768]) >= ?
-			ORDER BY array_cosine_similarity(embedding, `+string(embJSON)+`::FLOAT[768]) DESC
-			LIMIT 1
-		`, groupFilter, similarityThreshold).Scan(&existingID, &existingName, &existingType, &existingCreatedAt)
-
-		if err == nil {
-			// Found a matching entity — return it
+		if normalizeEntityName(candName) == normalizedName {
 			return &models.Entity{
-				ID:            existingID,
-				CanonicalName: existingName,
-				EntityType:    existingType,
+				ID:            candID,
+				CanonicalName: candName,
+				EntityType:    candType,
 				GroupID:       groupFilter,
-				CreatedAt:     existingCreatedAt,
+				CreatedAt:     candCreatedAt,
 			}, nil
-		}
-		// sql.ErrNoRows means no match — fall through to insert
-		if err != sql.ErrNoRows {
-			return nil, fmt.Errorf("failed to search for matching entity: %w", err)
 		}
 	}
 
@@ -854,7 +887,7 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 		metadataJSON = entity.Metadata
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO entities (id, canonical_name, entity_type, embedding, group_id, created_at, metadata)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, entity.ID, entity.CanonicalName, entity.EntityType, embeddingJSON, entity.GroupID, entity.CreatedAt, metadataJSON)
@@ -1105,6 +1138,19 @@ func sanitizeFTSQuery(s string) string {
 	s = replacer.Replace(s)
 	// Escape single quotes for SQL string literal safety
 	return strings.ReplaceAll(s, "'", "''")
+}
+
+// normalizeEntityName strips non-alphanumeric characters and lowercases for
+// fuzzy entity matching. "OscillateLabs" and "Oscillate Labs" both normalize
+// to "oscillatelabs".
+func normalizeEntityName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // Helper functions for scanning rows
