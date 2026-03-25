@@ -44,3 +44,46 @@ type UpdateParams struct {
 	ExpiredAt *time.Time `json:"expired_at,omitempty"`
 	Metadata  *string    `json:"metadata,omitempty"`
 }
+
+// Entity represents a canonical entity in the knowledge graph
+type Entity struct {
+	ID            string    `json:"id"`
+	CanonicalName string    `json:"canonical_name"`
+	EntityType    string    `json:"entity_type,omitempty"` // person, project, tool, org, concept
+	Embedding     []float32 `json:"embedding,omitempty"`
+	GroupID       string    `json:"group_id"`
+	CreatedAt     time.Time `json:"created_at"`
+	Metadata      string    `json:"metadata,omitempty"` // JSON string
+}
+
+// KnowledgeTriple represents a subject-predicate-object fact in the knowledge graph
+type KnowledgeTriple struct {
+	ID              string     `json:"id"`
+	SubjectEntityID string     `json:"subject_entity_id"`
+	Predicate       string     `json:"predicate"`
+	ObjectEntityID  string     `json:"object_entity_id"`
+	SourceEpisodeID string     `json:"source_episode_id,omitempty"`
+	Source          string     `json:"source"`
+	GroupID         string     `json:"group_id"`
+	Embedding       []float32  `json:"embedding,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ExpiredAt       *time.Time `json:"expired_at,omitempty"`
+	Confidence      float64    `json:"confidence"`
+	Verified        bool       `json:"verified"`
+	Metadata        string     `json:"metadata,omitempty"` // JSON string
+
+	// Denormalized fields populated during reads
+	SubjectName string `json:"subject_name,omitempty"`
+	ObjectName  string `json:"object_name,omitempty"`
+}
+
+// EpisodeLink represents a directional link between two episodes
+type EpisodeLink struct {
+	ID              string    `json:"id"`
+	SourceEpisodeID string    `json:"source_episode_id"`
+	TargetEpisodeID string    `json:"target_episode_id"`
+	Relationship    string    `json:"relationship"` // same_entity, follows_up, contradicts, elaborates, supersedes
+	ViaEntityID     string    `json:"via_entity_id,omitempty"`
+	Weight          float64   `json:"weight"`
+	CreatedAt       time.Time `json:"created_at"`
+}
