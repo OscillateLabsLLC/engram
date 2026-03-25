@@ -1475,6 +1475,412 @@ func containsWord(text, word string) bool {
 	return strings.Contains(lower, strings.ToLower(word))
 }
 
+func TestInsertEntity(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	t.Run("creates new entity", func(t *testing.T) {
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "DuckDB",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert entity: %v", err)
+		}
+		if entity.ID == "" {
+			t.Error("Entity ID was not generated")
+		}
+		if entity.CanonicalName != "DuckDB" {
+			t.Errorf("Expected canonical name 'DuckDB', got %q", entity.CanonicalName)
+		}
+	})
+
+	t.Run("defaults GroupID to default", func(t *testing.T) {
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "TestEntity",
+			EntityType:    "concept",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert entity: %v", err)
+		}
+		if entity.GroupID != "default" {
+			t.Errorf("Expected group_id 'default', got %q", entity.GroupID)
+		}
+	})
+
+	t.Run("case-insensitive resolution", func(t *testing.T) {
+		// "duckdb" should resolve to existing "DuckDB"
+		resolved, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "duckdb",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to resolve entity: %v", err)
+		}
+		if resolved.CanonicalName != "DuckDB" {
+			t.Errorf("Expected resolution to 'DuckDB', got %q", resolved.CanonicalName)
+		}
+	})
+
+	t.Run("normalized resolution strips spaces", func(t *testing.T) {
+		// Create "OscillateLabs" first
+		original, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "OscillateLabs",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+
+		// "Oscillate Labs" should resolve to "OscillateLabs" via normalized match
+		resolved, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Oscillate Labs",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to resolve: %v", err)
+		}
+		if resolved.ID != original.ID {
+			t.Errorf("Expected same ID %s, got %s", original.ID, resolved.ID)
+		}
+	})
+
+	t.Run("normalized resolution handles hyphens and dots", func(t *testing.T) {
+		// Create "HomeAssistant"
+		original, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "HomeAssistant",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		// "Home-Assistant" should resolve to "HomeAssistant" (strip hyphen)
+		resolved, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Home-Assistant",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to resolve: %v", err)
+		}
+		if resolved.ID != original.ID {
+			t.Errorf("Expected same ID %s, got %s", original.ID, resolved.ID)
+		}
+	})
+
+	t.Run("LLC suffix creates distinct entity", func(t *testing.T) {
+		// "Oscillate Labs LLC" normalizes to "oscillatelabsllc" while
+		// "OscillateLabs" normalizes to "oscillatelabs" — these are
+		// genuinely different normalized forms, so distinct entities.
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Oscillate Labs LLC",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if entity.CanonicalName == "OscillateLabs" {
+			t.Error("LLC variant should be a distinct entity from base name")
+		}
+	})
+
+	t.Run("distinct entities stay separate", func(t *testing.T) {
+		python, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Python",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		golang, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Go",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if python.ID == golang.ID {
+			t.Error("Python and Go should be distinct entities")
+		}
+	})
+
+	t.Run("different groups are independent", func(t *testing.T) {
+		e1, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "SharedName",
+			EntityType:    "concept",
+			GroupID:       "group-a",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		e2, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "SharedName",
+			EntityType:    "concept",
+			GroupID:       "group-b",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if e1.ID == e2.ID {
+			t.Error("Same name in different groups should be distinct entities")
+		}
+	})
+
+	t.Run("GetEntity retrieves by ID", func(t *testing.T) {
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "RetrieveMe",
+			EntityType:    "person",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+
+		retrieved, err := store.GetEntity(ctx, entity.ID)
+		if err != nil {
+			t.Fatalf("Failed to get entity: %v", err)
+		}
+		if retrieved.CanonicalName != "RetrieveMe" {
+			t.Errorf("Expected 'RetrieveMe', got %q", retrieved.CanonicalName)
+		}
+	})
+}
+
+func TestInsertKnowledgeTriple(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create entities first
+	subject, _ := store.InsertEntity(ctx, &models.Entity{
+		CanonicalName: "Engram",
+		EntityType:    "project",
+	}, 0.88)
+	object, _ := store.InsertEntity(ctx, &models.Entity{
+		CanonicalName: "DuckDB",
+		EntityType:    "tool",
+	}, 0.88)
+
+	t.Run("inserts triple with defaults", func(t *testing.T) {
+		triple := &models.KnowledgeTriple{
+			SubjectEntityID: subject.ID,
+			Predicate:       "uses",
+			ObjectEntityID:  object.ID,
+			Source:          "test",
+		}
+		err := store.InsertKnowledgeTriple(ctx, triple)
+		if err != nil {
+			t.Fatalf("Failed to insert triple: %v", err)
+		}
+		if triple.ID == "" {
+			t.Error("Triple ID was not generated")
+		}
+		if triple.Confidence != 1.0 {
+			t.Errorf("Expected default confidence 1.0, got %f", triple.Confidence)
+		}
+	})
+
+	t.Run("inserts triple with custom confidence", func(t *testing.T) {
+		triple := &models.KnowledgeTriple{
+			SubjectEntityID: subject.ID,
+			Predicate:       "depends_on",
+			ObjectEntityID:  object.ID,
+			Source:          "dreamer/qwen3:8b",
+			Confidence:      0.72,
+		}
+		err := store.InsertKnowledgeTriple(ctx, triple)
+		if err != nil {
+			t.Fatalf("Failed to insert triple: %v", err)
+		}
+		if triple.Confidence != 0.72 {
+			t.Errorf("Expected confidence 0.72, got %f", triple.Confidence)
+		}
+	})
+}
+
+func TestInsertEpisodeLink(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	// Create two episodes
+	ep1 := &models.Episode{Content: "Episode about DuckDB", Source: "test"}
+	ep2 := &models.Episode{Content: "Another episode about DuckDB", Source: "test"}
+	store.InsertEpisode(ctx, ep1)
+	store.InsertEpisode(ctx, ep2)
+
+	t.Run("creates link between episodes", func(t *testing.T) {
+		link := &models.EpisodeLink{
+			SourceEpisodeID: ep1.ID,
+			TargetEpisodeID: ep2.ID,
+			Relationship:    "same_entity",
+		}
+		err := store.InsertEpisodeLink(ctx, link)
+		if err != nil {
+			t.Fatalf("Failed to insert link: %v", err)
+		}
+		if link.ID == "" {
+			t.Error("Link ID was not generated")
+		}
+		if link.Weight != 1.0 {
+			t.Errorf("Expected default weight 1.0, got %f", link.Weight)
+		}
+	})
+
+	t.Run("deduplicates existing links", func(t *testing.T) {
+		// Insert same link again — should not error
+		link := &models.EpisodeLink{
+			SourceEpisodeID: ep1.ID,
+			TargetEpisodeID: ep2.ID,
+			Relationship:    "same_entity",
+		}
+		err := store.InsertEpisodeLink(ctx, link)
+		if err != nil {
+			t.Fatalf("Duplicate link insert should not error: %v", err)
+		}
+
+		// Verify only one link exists
+		links, err := store.GetEpisodeLinks(ctx, ep1.ID)
+		if err != nil {
+			t.Fatalf("Failed to get links: %v", err)
+		}
+		count := 0
+		for _, l := range links {
+			if l.Relationship == "same_entity" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("Expected 1 same_entity link, got %d", count)
+		}
+	})
+
+	t.Run("GetEpisodeLinks returns links in both directions", func(t *testing.T) {
+		// Query from target side
+		links, err := store.GetEpisodeLinks(ctx, ep2.ID)
+		if err != nil {
+			t.Fatalf("Failed to get links: %v", err)
+		}
+		if len(links) == 0 {
+			t.Error("Expected to find link from target side")
+		}
+	})
+
+	t.Run("link with via_entity_id", func(t *testing.T) {
+		entity, _ := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "DuckDB",
+			EntityType:    "tool",
+		}, 0.88)
+
+		link := &models.EpisodeLink{
+			SourceEpisodeID: ep1.ID,
+			TargetEpisodeID: ep2.ID,
+			Relationship:    "elaborates",
+			ViaEntityID:     entity.ID,
+		}
+		err := store.InsertEpisodeLink(ctx, link)
+		if err != nil {
+			t.Fatalf("Failed to insert link with via_entity_id: %v", err)
+		}
+
+		links, _ := store.GetEpisodeLinks(ctx, ep1.ID)
+		found := false
+		for _, l := range links {
+			if l.Relationship == "elaborates" && l.ViaEntityID == entity.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("Expected to find link with via_entity_id")
+		}
+	})
+}
+
+func TestNormalizeEntityName(t *testing.T) {
+	tests := []struct {
+		input, expected string
+	}{
+		{"OscillateLabs", "oscillatelabs"},
+		{"Oscillate Labs", "oscillatelabs"},
+		{"Oscillate Labs, LLC", "oscillatelabsllc"},
+		{"DuckDB", "duckdb"},
+		{"duck-db", "duckdb"},
+		{"Mike", "mike"},
+		{"mike", "mike"},
+		{"", ""},
+		{"Hello World 123", "helloworld123"},
+	}
+	for _, tt := range tests {
+		got := normalizeEntityName(tt.input)
+		if got != tt.expected {
+			t.Errorf("normalizeEntityName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestEpisodeLinkUniqueConstraint(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	ep1 := &models.Episode{Content: "First", Source: "test"}
+	ep2 := &models.Episode{Content: "Second", Source: "test"}
+	store.InsertEpisode(ctx, ep1)
+	store.InsertEpisode(ctx, ep2)
+
+	// First insert succeeds
+	err := store.InsertEpisodeLink(ctx, &models.EpisodeLink{
+		SourceEpisodeID: ep1.ID,
+		TargetEpisodeID: ep2.ID,
+		Relationship:    "same_entity",
+	})
+	if err != nil {
+		t.Fatalf("First link insert failed: %v", err)
+	}
+
+	// Duplicate should succeed silently (INSERT OR IGNORE)
+	err = store.InsertEpisodeLink(ctx, &models.EpisodeLink{
+		SourceEpisodeID: ep1.ID,
+		TargetEpisodeID: ep2.ID,
+		Relationship:    "same_entity",
+	})
+	if err != nil {
+		t.Fatalf("Duplicate link insert should not error: %v", err)
+	}
+
+	// Different relationship should create a new link
+	err = store.InsertEpisodeLink(ctx, &models.EpisodeLink{
+		SourceEpisodeID: ep1.ID,
+		TargetEpisodeID: ep2.ID,
+		Relationship:    "elaborates",
+	})
+	if err != nil {
+		t.Fatalf("Different relationship link failed: %v", err)
+	}
+
+	links, _ := store.GetEpisodeLinks(ctx, ep1.ID)
+	if len(links) != 2 {
+		t.Errorf("Expected 2 links (same_entity + elaborates), got %d", len(links))
+	}
+}
+
+func TestGraphTablesCreated(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	// Verify all three graph tables exist
+	tables := []string{"entities", "knowledge", "episode_links"}
+	for _, table := range tables {
+		var count int
+		err := store.db.QueryRow("SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?", table).Scan(&count)
+		if err != nil {
+			t.Fatalf("Failed to check table %s: %v", table, err)
+		}
+		if count == 0 {
+			t.Errorf("Table %s was not created", table)
+		}
+	}
+}
+
 func setupTestStore(t *testing.T) *Store {
 	t.Helper()
 	tmpFile := t.TempDir() + "/test.duckdb"

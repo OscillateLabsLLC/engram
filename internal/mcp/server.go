@@ -221,6 +221,84 @@ func (s *Server) registerTools() {
 		},
 	}, s.handleUpdateEpisode)
 
+	// add_knowledge tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "add_knowledge",
+		Description: "Store a knowledge fact as a subject-predicate-object triple. Triples link back to their source episode for provenance. Entities are automatically resolved — if a semantically matching entity already exists, it will be reused rather than duplicated.\n\nAllowed predicates: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"subject": map[string]interface{}{
+					"type":        "string",
+					"description": "The subject entity (e.g., 'Mike', 'Engram project')",
+				},
+				"predicate": map[string]interface{}{
+					"type":        "string",
+					"description": "The relationship",
+					"enum":        []string{"owns", "works_at", "contributes_to", "uses", "prefers", "builds", "depends_on", "located_in", "related_to", "part_of", "instance_of", "created_by", "configured_with", "deployed_on", "communicates_via"},
+				},
+				"object": map[string]interface{}{
+					"type":        "string",
+					"description": "The object entity (e.g., 'DuckDB', 'OscillateLabs')",
+				},
+				"subject_type": map[string]interface{}{
+					"type":        "string",
+					"description": "Type of the subject entity",
+					"enum":        []string{"person", "project", "tool", "organization", "place", "concept"},
+				},
+				"object_type": map[string]interface{}{
+					"type":        "string",
+					"description": "Type of the object entity",
+					"enum":        []string{"person", "project", "tool", "organization", "place", "concept"},
+				},
+				"source_episode_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Episode ID this fact was derived from",
+				},
+				"source": map[string]interface{}{
+					"type":        "string",
+					"description": "Source identifier (e.g., 'claude-code/opus-4.6')",
+				},
+				"group_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Group namespace",
+				},
+			},
+			Required: []string{"subject", "predicate", "object", "source"},
+		},
+	}, s.handleAddKnowledge)
+
+	// link_episodes tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "link_episodes",
+		Description: "Create a directional link between two episodes that share entities, topics, or narrative continuity. Duplicate links (same source, target, and relationship) are silently skipped.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"source_episode_id": map[string]interface{}{
+					"type":        "string",
+					"description": "ID of the source episode",
+				},
+				"target_episode_id": map[string]interface{}{
+					"type":        "string",
+					"description": "ID of the target episode",
+				},
+				"relationship": map[string]interface{}{
+					"type":        "string",
+					"description": "Type of link between the episodes",
+					"enum":        []string{"same_entity", "follows_up", "contradicts", "elaborates", "supersedes"},
+				},
+				"weight": map[string]interface{}{
+					"type":        "number",
+					"description": "Link strength 0.0-1.0 (default: 1.0)",
+					"minimum":     0.0,
+					"maximum":     1.0,
+				},
+			},
+			Required: []string{"source_episode_id", "target_episode_id", "relationship"},
+		},
+	}, s.handleLinkEpisodes)
+
 	// get_status tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "get_status",
@@ -490,6 +568,150 @@ func (s *Server) handleGetStatus(ctx context.Context, request mcp.CallToolReques
 		"status":  "healthy",
 		"version": "1.0.0",
 		"message": "Engram memory system is operational",
+	})
+
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		Subject         string `json:"subject"`
+		Predicate       string `json:"predicate"`
+		Object          string `json:"object"`
+		SubjectType     string `json:"subject_type"`
+		ObjectType      string `json:"object_type"`
+		SourceEpisodeID string `json:"source_episode_id"`
+		Source          string `json:"source"`
+		GroupID         string `json:"group_id"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+
+	// Validate predicate against controlled vocabulary
+	validPredicates := map[string]bool{
+		"owns": true, "works_at": true, "contributes_to": true, "uses": true,
+		"prefers": true, "builds": true, "depends_on": true, "located_in": true,
+		"related_to": true, "part_of": true, "instance_of": true, "created_by": true,
+		"configured_with": true, "deployed_on": true, "communicates_via": true,
+	}
+	if !validPredicates[params.Predicate] {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid predicate %q: must be one of: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via", params.Predicate)), nil
+	}
+
+	// Resolve subject entity (embed name, match or create)
+	embedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	subjectEmb, err := s.embedder.Generate(embedCtx, params.Subject)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to generate subject embedding: %v\n", err)
+	}
+
+	subjectEntity, err := s.store.InsertEntity(ctx, &models.Entity{
+		CanonicalName: params.Subject,
+		EntityType:    params.SubjectType,
+		Embedding:     subjectEmb,
+		GroupID:       params.GroupID,
+	}, 0.88)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to resolve subject entity: %v", err)), nil
+	}
+
+	// Resolve object entity
+	embedCtx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+
+	objectEmb, err := s.embedder.Generate(embedCtx2, params.Object)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to generate object embedding: %v\n", err)
+	}
+
+	objectEntity, err := s.store.InsertEntity(ctx, &models.Entity{
+		CanonicalName: params.Object,
+		EntityType:    params.ObjectType,
+		Embedding:     objectEmb,
+		GroupID:       params.GroupID,
+	}, 0.88)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to resolve object entity: %v", err)), nil
+	}
+
+	// Generate embedding for the triple itself
+	tripleText := fmt.Sprintf("%s %s %s", subjectEntity.CanonicalName, params.Predicate, objectEntity.CanonicalName)
+	embedCtx3, cancel3 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel3()
+
+	tripleEmb, err := s.embedder.Generate(embedCtx3, tripleText)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to generate triple embedding: %v\n", err)
+	}
+
+	triple := &models.KnowledgeTriple{
+		SubjectEntityID: subjectEntity.ID,
+		Predicate:       params.Predicate,
+		ObjectEntityID:  objectEntity.ID,
+		SourceEpisodeID: params.SourceEpisodeID,
+		Source:          params.Source,
+		GroupID:         params.GroupID,
+		Embedding:       tripleEmb,
+		Confidence:      1.0, // Client-written triples get full confidence
+	}
+
+	if err := s.store.InsertKnowledgeTriple(ctx, triple); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to store knowledge triple: %v", err)), nil
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"success":           true,
+		"triple_id":         triple.ID,
+		"subject_entity_id": subjectEntity.ID,
+		"subject_name":      subjectEntity.CanonicalName,
+		"object_entity_id":  objectEntity.ID,
+		"object_name":       objectEntity.CanonicalName,
+		"message":           fmt.Sprintf("Stored: %s %s %s", subjectEntity.CanonicalName, params.Predicate, objectEntity.CanonicalName),
+	})
+
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (s *Server) handleLinkEpisodes(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		SourceEpisodeID string  `json:"source_episode_id"`
+		TargetEpisodeID string  `json:"target_episode_id"`
+		Relationship    string  `json:"relationship"`
+		Weight          float64 `json:"weight"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+
+	// Validate relationship
+	validRelationships := map[string]bool{
+		"same_entity": true, "follows_up": true, "contradicts": true,
+		"elaborates": true, "supersedes": true,
+	}
+	if !validRelationships[params.Relationship] {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid relationship %q: must be one of: same_entity, follows_up, contradicts, elaborates, supersedes", params.Relationship)), nil
+	}
+
+	link := &models.EpisodeLink{
+		SourceEpisodeID: params.SourceEpisodeID,
+		TargetEpisodeID: params.TargetEpisodeID,
+		Relationship:    params.Relationship,
+		Weight:          params.Weight,
+	}
+
+	if err := s.store.InsertEpisodeLink(ctx, link); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to link episodes: %v", err)), nil
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"success": true,
+		"link_id": link.ID,
+		"message": fmt.Sprintf("Linked %s -[%s]-> %s", params.SourceEpisodeID, params.Relationship, params.TargetEpisodeID),
 	})
 
 	return mcp.NewToolResultText(string(result)), nil
