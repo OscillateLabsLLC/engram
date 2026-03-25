@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.5.0](https://github.com/OscillateLabsLLC/engram/compare/v2.4.0...v2.5.0) (2026-03-25)
+
+
+### Features
+
+* knowledge graph schema, entity resolution, and MCP tools ([2fd857b](https://github.com/OscillateLabsLLC/engram/commit/2fd857bf8623cb1eaa8b55c0a86eb102ab826a46))
+* knowledge graph schema, entity resolution, and MCP tools ([abd92b4](https://github.com/OscillateLabsLLC/engram/commit/abd92b4aafe0087d4e036e401cf233aba1ceb377))
+
+
+### Bug Fixes
+
+* add UNIQUE constraints and expand test coverage ([2fd6ba7](https://github.com/OscillateLabsLLC/engram/commit/2fd6ba7fa6372c5a3b082c5ba36c1d30e7f540ea))
+* use string normalization for entity resolution instead of embeddings ([6d2ace7](https://github.com/OscillateLabsLLC/engram/commit/6d2ace7c661d9cc94ebd2a4d0dcfd8657eec140f))
+
 ## [2.4.0](https://github.com/OscillateLabsLLC/engram/compare/v2.3.0...v2.4.0) (2026-03-23)
 
 
