@@ -94,6 +94,7 @@ func (s *Store) initialize() error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_entities_group_id ON entities (group_id);
 		CREATE INDEX IF NOT EXISTS idx_entities_canonical_name ON entities (canonical_name);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_name_group ON entities (LOWER(canonical_name), group_id);
 
 		CREATE TABLE IF NOT EXISTS knowledge (
 			id VARCHAR PRIMARY KEY,
@@ -122,7 +123,8 @@ func (s *Store) initialize() error {
 			relationship VARCHAR NOT NULL,
 			via_entity_id VARCHAR,
 			weight FLOAT DEFAULT 1.0,
-			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE (source_episode_id, target_episode_id, relationship)
 		);
 		CREATE INDEX IF NOT EXISTS idx_episode_links_source ON episode_links (source_episode_id);
 		CREATE INDEX IF NOT EXISTS idx_episode_links_target ON episode_links (target_episode_id);
@@ -1049,26 +1051,16 @@ func (s *Store) InsertEpisodeLink(ctx context.Context, link *models.EpisodeLink)
 		link.Weight = 1.0
 	}
 
-	// Check for existing link (deduplicate)
-	var exists int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM episode_links
-		WHERE source_episode_id = ? AND target_episode_id = ? AND relationship = ?
-	`, link.SourceEpisodeID, link.TargetEpisodeID, link.Relationship).Scan(&exists)
-	if err != nil {
-		return fmt.Errorf("failed to check existing link: %w", err)
-	}
-	if exists > 0 {
-		return nil // Link already exists, skip silently
-	}
-
 	var viaEntityID interface{}
 	if link.ViaEntityID != "" {
 		viaEntityID = link.ViaEntityID
 	}
 
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO episode_links (id, source_episode_id, target_episode_id, relationship, via_entity_id, weight, created_at)
+	// UNIQUE constraint on (source_episode_id, target_episode_id, relationship)
+	// handles deduplication at the database level. INSERT OR IGNORE silently
+	// skips duplicates without a race-prone check-then-insert pattern.
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO episode_links (id, source_episode_id, target_episode_id, relationship, via_entity_id, weight, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`, link.ID, link.SourceEpisodeID, link.TargetEpisodeID, link.Relationship, viaEntityID, link.Weight, link.CreatedAt)
 	if err != nil {

@@ -1509,6 +1509,123 @@ func TestInsertEntity(t *testing.T) {
 		}
 	})
 
+	t.Run("case-insensitive resolution", func(t *testing.T) {
+		// "duckdb" should resolve to existing "DuckDB"
+		resolved, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "duckdb",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to resolve entity: %v", err)
+		}
+		if resolved.CanonicalName != "DuckDB" {
+			t.Errorf("Expected resolution to 'DuckDB', got %q", resolved.CanonicalName)
+		}
+	})
+
+	t.Run("normalized resolution strips spaces", func(t *testing.T) {
+		// Create "OscillateLabs" first
+		original, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "OscillateLabs",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+
+		// "Oscillate Labs" should resolve to "OscillateLabs" via normalized match
+		resolved, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Oscillate Labs",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to resolve: %v", err)
+		}
+		if resolved.ID != original.ID {
+			t.Errorf("Expected same ID %s, got %s", original.ID, resolved.ID)
+		}
+	})
+
+	t.Run("normalized resolution handles hyphens and dots", func(t *testing.T) {
+		// Create "HomeAssistant"
+		original, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "HomeAssistant",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		// "Home-Assistant" should resolve to "HomeAssistant" (strip hyphen)
+		resolved, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Home-Assistant",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to resolve: %v", err)
+		}
+		if resolved.ID != original.ID {
+			t.Errorf("Expected same ID %s, got %s", original.ID, resolved.ID)
+		}
+	})
+
+	t.Run("LLC suffix creates distinct entity", func(t *testing.T) {
+		// "Oscillate Labs LLC" normalizes to "oscillatelabsllc" while
+		// "OscillateLabs" normalizes to "oscillatelabs" — these are
+		// genuinely different normalized forms, so distinct entities.
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Oscillate Labs LLC",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if entity.CanonicalName == "OscillateLabs" {
+			t.Error("LLC variant should be a distinct entity from base name")
+		}
+	})
+
+	t.Run("distinct entities stay separate", func(t *testing.T) {
+		python, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Python",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		golang, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Go",
+			EntityType:    "tool",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if python.ID == golang.ID {
+			t.Error("Python and Go should be distinct entities")
+		}
+	})
+
+	t.Run("different groups are independent", func(t *testing.T) {
+		e1, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "SharedName",
+			EntityType:    "concept",
+			GroupID:       "group-a",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		e2, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "SharedName",
+			EntityType:    "concept",
+			GroupID:       "group-b",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if e1.ID == e2.ID {
+			t.Error("Same name in different groups should be distinct entities")
+		}
+	})
+
 	t.Run("GetEntity retrieves by ID", func(t *testing.T) {
 		entity, err := store.InsertEntity(ctx, &models.Entity{
 			CanonicalName: "RetrieveMe",
@@ -1676,6 +1793,74 @@ func TestInsertEpisodeLink(t *testing.T) {
 			t.Error("Expected to find link with via_entity_id")
 		}
 	})
+}
+
+func TestNormalizeEntityName(t *testing.T) {
+	tests := []struct {
+		input, expected string
+	}{
+		{"OscillateLabs", "oscillatelabs"},
+		{"Oscillate Labs", "oscillatelabs"},
+		{"Oscillate Labs, LLC", "oscillatelabsllc"},
+		{"DuckDB", "duckdb"},
+		{"duck-db", "duckdb"},
+		{"Mike", "mike"},
+		{"mike", "mike"},
+		{"", ""},
+		{"Hello World 123", "helloworld123"},
+	}
+	for _, tt := range tests {
+		got := normalizeEntityName(tt.input)
+		if got != tt.expected {
+			t.Errorf("normalizeEntityName(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestEpisodeLinkUniqueConstraint(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	ep1 := &models.Episode{Content: "First", Source: "test"}
+	ep2 := &models.Episode{Content: "Second", Source: "test"}
+	store.InsertEpisode(ctx, ep1)
+	store.InsertEpisode(ctx, ep2)
+
+	// First insert succeeds
+	err := store.InsertEpisodeLink(ctx, &models.EpisodeLink{
+		SourceEpisodeID: ep1.ID,
+		TargetEpisodeID: ep2.ID,
+		Relationship:    "same_entity",
+	})
+	if err != nil {
+		t.Fatalf("First link insert failed: %v", err)
+	}
+
+	// Duplicate should succeed silently (INSERT OR IGNORE)
+	err = store.InsertEpisodeLink(ctx, &models.EpisodeLink{
+		SourceEpisodeID: ep1.ID,
+		TargetEpisodeID: ep2.ID,
+		Relationship:    "same_entity",
+	})
+	if err != nil {
+		t.Fatalf("Duplicate link insert should not error: %v", err)
+	}
+
+	// Different relationship should create a new link
+	err = store.InsertEpisodeLink(ctx, &models.EpisodeLink{
+		SourceEpisodeID: ep1.ID,
+		TargetEpisodeID: ep2.ID,
+		Relationship:    "elaborates",
+	})
+	if err != nil {
+		t.Fatalf("Different relationship link failed: %v", err)
+	}
+
+	links, _ := store.GetEpisodeLinks(ctx, ep1.ID)
+	if len(links) != 2 {
+		t.Errorf("Expected 2 links (same_entity + elaborates), got %d", len(links))
+	}
 }
 
 func TestGraphTablesCreated(t *testing.T) {
