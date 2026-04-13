@@ -193,7 +193,7 @@ func (s *Server) registerTools() {
 	// update_episode tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "update_episode",
-		Description: "Update metadata, tags, or expiration of an episode",
+		Description: "Update metadata, tags, or expiration of an episode. Setting expired_at to a past timestamp performs a soft-delete — the episode is hidden from default search but remains recoverable by setting expired_at back to null. Use tags to demote (e.g. add 'deprecated') so callers can filter stale content at query time.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -206,11 +206,11 @@ func (s *Server) registerTools() {
 					"items": map[string]interface{}{
 						"type": "string",
 					},
-					"description": "New tags array",
+					"description": "New tags array (replaces existing tags). Add tags like 'deprecated' to demote episodes that should be filtered out at query time.",
 				},
 				"expired_at": map[string]interface{}{
 					"type":        "string",
-					"description": "Expiration time (ISO 8601)",
+					"description": "Expiration time (ISO 8601). Set to a past timestamp to soft-delete (hidden from default search, recoverable). Set to a future timestamp to schedule expiration. Pass null to un-expire.",
 				},
 				"metadata": map[string]interface{}{
 					"type":        "string",
