@@ -287,7 +287,7 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 			"/api/v1/memory/episodes/{id}": map[string]interface{}{
 				"put": map[string]interface{}{
 					"summary":     "Update episode",
-					"description": "Update metadata, tags, or expiration of an episode",
+					"description": "Update metadata, tags, or expiration of an episode. Set expired_at to a past timestamp for soft-delete (reversible, hidden from default search). Use tags (e.g. 'deprecated') to demote content that should be filtered at query time.",
 					"operationId": "updateEpisode",
 					"parameters": []map[string]interface{}{
 						{

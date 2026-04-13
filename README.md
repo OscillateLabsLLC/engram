@@ -150,6 +150,30 @@ just docker-up-linux
 
 For detailed deployment instructions including Docker Compose, Kubernetes, and production configurations, see [docs/deployment.md](docs/deployment.md).
 
+## Cleanup Patterns
+
+Agents clean up stale memories via `update_episode` — engram intentionally does not expose a `delete_episode` MCP tool because permanent deletion is a deliberate human action, not something agents should do autonomously.
+
+### Soft-delete (reversible)
+
+Set `expired_at` to a past timestamp. The episode is hidden from default search but remains in the store — recover it later by clearing `expired_at`.
+
+```json
+{"tool": "update_episode", "id": "...", "expired_at": "2020-01-01T00:00:00Z"}
+```
+
+### Demote (visible but filtered)
+
+Replace the episode's tags to include a marker like `deprecated` or `low-confidence`. The episode stays in search results so nothing is lost, but callers can filter at query time.
+
+```json
+{"tool": "update_episode", "id": "...", "tags": ["deprecated", "original-topic"]}
+```
+
+### Scheduled expiration
+
+Set `expired_at` to a future timestamp — the episode disappears from default search after that time with no further action.
+
 ## Architecture
 
 ```text
