@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.1](https://github.com/OscillateLabsLLC/engram/compare/v2.5.0...v2.5.1) (2026-04-23)
+
+
+### Bug Fixes
+
+* **deps:** bump buger/jsonparser to v1.1.2 to clear DoS alert ([dc8fb59](https://github.com/OscillateLabsLLC/engram/commit/dc8fb59f6308a4bd329f87a05b0c8c514ca14ede))
+* **deps:** bump buger/jsonparser to v1.1.2 to clear DoS alert ([9be6eaa](https://github.com/OscillateLabsLLC/engram/commit/9be6eaa87c32dec8bbcfe0eef51e645969275b16))
+
 ## [2.5.0](https://github.com/OscillateLabsLLC/engram/compare/v2.4.0...v2.5.0) (2026-03-25)
 
 
