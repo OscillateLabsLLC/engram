@@ -21,7 +21,7 @@ func setupTestServer(t *testing.T) *Server {
 	t.Cleanup(func() { store.Close() })
 
 	embedder := embedding.NewClient("http://localhost:11434", "nomic-embed-text", "")
-	return NewServer(store, embedder, "0")
+	return NewServer(store, embedder, nil, "0")
 }
 
 func TestHealthEndpoint(t *testing.T) {

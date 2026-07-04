@@ -80,17 +80,19 @@ Every stored vector is stamped with the model that produced it (`embedding_model
 
 Engram warns at startup when stale embeddings exist and exposes `POST /api/v1/admin/reembed` to regenerate them asynchronously in place. Embeddings are pure derived data, so the pass never touches episode content; it is idempotent and resumable (keyset pagination, per-row failures are skipped and retried on the next run). `{"force": true}` regenerates every row regardless of provenance. Progress is observable via `GET /api/v1/admin/reembed` and `/api/v1/status`.
 
-## Layer 2: Derived Knowledge Graph (Future)
+## Layer 2: Derived Knowledge Graph (Dreamer)
 
-A periodic batch process that reads episodes and builds entity/relationship structures. **Not currently implemented.** The episode store alone with semantic search provides the majority of the value.
+The Dreamer is an asynchronous worker that reads stored episodes and extracts entities and subject-predicate-object triples into the knowledge graph (`entities`, `knowledge`, and `episode_links` tables), then links episodes that share entities. It is **disabled by default** — trigger a pass with `POST /api/v1/admin/dream` (progress via `GET`), or set `ENGRAM_DREAM_INTERVAL` to run it on a schedule.
 
-When built:
+Key properties:
 
-- Runs as a background job, not in the write path
-- Can use any graph backend
-- Failures don't lose data — just means the graph is stale until the next successful run
-- Can be rebuilt from scratch at any time from the episode log
-- Entity resolution happens here, with human review capability
+- **Async, never in the write path** — episodes are stored instantly; enrichment happens later in a background job
+- **Derived data only** — episode content is never modified; the graph can always be rebuilt from the episode log
+- **Deterministic validation pipeline** — LLM output is filtered before anything is written: predicates must come from the controlled vocabulary, confidence is clamped to [0,1], triples whose subject and object both fail to appear in the episode text are rejected as hallucinations, and at most 10 triples are stored per episode
+- **Failures don't loop** — each episode is processed once; LLM or parse failures stamp the episode with an `enrichment_error` in its metadata rather than retrying forever
+- **Pluggable LLM** — an OpenAI-compatible chat endpoint (default, works with Ollama/LM Studio) or the Claude Code CLI as a subprocess
+
+Triples written by the Dreamer carry `source: "dreamer/<model>"`, the LLM's confidence score, and `verified: false`, distinguishing them from client-written facts.
 
 ## MCP Server
 
@@ -99,7 +101,12 @@ Go service using the official MCP SDK, exposing tools over SSE:
 | Tool | Description | LLM Required |
 | --- | --- | :---: |
 | `add_memory` | Store a new episode | No |
-| `search` | Semantic + temporal + tag search | No |
+| `add_conversation` | Store a multi-turn conversation as one episode | No |
+| `search` | Semantic + temporal + tag search, optional graph traversal (`graph_depth`) | No |
+| `search_knowledge` | Semantic search over knowledge triples | No |
+| `add_knowledge` | Store a knowledge triple directly | No |
+| `link_episodes` | Link two related episodes | No |
+| `find_loose_ends` | Surface weakly-connected episodes, entities, and clusters | No |
 | `get_episodes` | Retrieve by time range, source, or group | No |
 | `update_episode` | Modify metadata/tags/expiration | No |
 | `get_status` | Health check | No |
@@ -150,7 +157,6 @@ Deployment with PersistentVolume for the `.duckdb` file. Requires ingress config
 
 ## Future Roadmap
 
-- Layer 2 knowledge graph with entity extraction (v3)
-- Memory consolidation and summarization via Dreamer service (v3)
+- Memory consolidation and summarization via the Dreamer
 - Support for multiple embedding models and dimensions
 - Batch embedding generation for bulk imports

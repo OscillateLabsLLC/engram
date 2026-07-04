@@ -97,6 +97,13 @@ Configure via environment variables:
 | `EMBEDDING_API_KEY` | Bearer token for the embeddings endpoint (if required)  | _(none)_                 |
 | `ENGRAM_PORT`       | Server port                                             | `3490`                   |
 | `ENGRAM_SERVER_URL` | Server URL (used by stdio proxy)                        | `http://localhost:3490`  |
+| `ENGRAM_LLM_ADAPTER` | Dreamer LLM adapter: `openai` or `claude-cli`          | `openai`                 |
+| `ENGRAM_LLM_ENDPOINT` | OpenAI-compatible chat-completions endpoint (`openai` adapter) | `http://localhost:11434/v1` |
+| `ENGRAM_LLM_MODEL`  | Chat model for knowledge extraction (`openai` adapter)  | `qwen3:8b`               |
+| `ENGRAM_LLM_API_KEY` | Bearer token for the chat endpoint (if required)       | _(none)_                 |
+| `ENGRAM_LLM_TIMEOUT` | Per-episode extraction timeout (Go duration)           | `60s`                    |
+| `ENGRAM_CLAUDE_BIN` | Claude CLI binary (`claude-cli` adapter)                | `claude`                 |
+| `ENGRAM_DREAM_INTERVAL` | Automatic dreaming interval (Go duration); unset disables it | _(disabled)_      |
 
 `EMBEDDING_URL` accepts a bare host (`http://localhost:11434`), a `/v1` base (`http://localhost:1234/v1`), or a full `/v1/embeddings` endpoint — Engram normalizes it. `OLLAMA_URL` is still honored as a deprecated alias for `EMBEDDING_URL`.
 
@@ -130,6 +137,29 @@ curl http://localhost:3490/api/v1/admin/reembed
 ```
 
 The job runs asynchronously inside the server, only touches derived data (episode content is never modified), and is safe to re-run — anything that fails is retried on the next pass. This is also how you backfill episodes written while the embedding server was down.
+
+## Dreamer (knowledge extraction)
+
+The dreamer reads stored episodes and extracts entities and relationships into the knowledge graph — subject-predicate-object triples like `Mike uses DuckDB`, plus links between episodes that mention the same entities. It runs entirely outside the write path: episodes are stored instantly, and enrichment happens later, in the background, one episode at a time. Extracted triples pass a deterministic validation pipeline (predicate whitelist, confidence bounds, a check that the entities actually appear in the episode text) before anything is written.
+
+Dreaming is **disabled by default**. Trigger a pass manually:
+
+```bash
+# Enrich all episodes that haven't been processed yet
+curl -X POST http://localhost:3490/api/v1/admin/dream
+
+# Check progress and the enrichment backlog
+curl http://localhost:3490/api/v1/admin/dream
+```
+
+Or set `ENGRAM_DREAM_INTERVAL` (e.g. `30m`) to run it automatically on a schedule. Each episode is processed once — failures are recorded in the episode's metadata and not retried, so a bad episode can't wedge the crawl.
+
+Two LLM adapters are available:
+
+- **`openai`** (default) — any OpenAI-compatible chat-completions endpoint (Ollama, LM Studio, llama.cpp, hosted providers). Point `ENGRAM_LLM_ENDPOINT` and `ENGRAM_LLM_MODEL` at a small local model; `qwen3:8b` on Ollama works well.
+- **`claude-cli`** — shells out to the [Claude Code CLI](https://claude.com/claude-code) (`claude -p`) so you can reuse an existing Claude setup with no extra server.
+
+> **Billing note for `claude-cli`:** the CLI's authentication determines what you pay. Logged in with a Claude subscription (OAuth), dream runs consume your plan usage. With `ANTHROPIC_API_KEY` set, every episode is a metered API call. Know which one you're configured for before enabling `ENGRAM_DREAM_INTERVAL`.
 
 ## MCP Client Integration
 

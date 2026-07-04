@@ -223,6 +223,7 @@ Search episodes using semantic similarity and filters.
 | `min_similarity`  |          | Minimum similarity score to include (0.0–1.0). Only applies in vector mode. |
 | `search_mode`     |          | How to search: `vector` (by meaning, default), `keyword` (by exact words), or `hybrid` (both combined). The default will change to `hybrid` in the next major version. |
 | `search_alpha`    |          | In hybrid mode, how much to favor meaning vs. exact words. Higher = more meaning-based, lower = more word-based (default: 0.7). For pure word search, use `search_mode=keyword` instead. |
+| `graph_depth`     |          | When > 0 (max 3), walk the episode link graph that many hops from each of the top 5 results and attach the linked episode IDs and relationships under `linked_episodes`. Default 0 = no traversal. |
 
 **Which mode should I use?**
 - **`vector`** (default) — Best when you want conceptually similar results. "What are my deployment preferences?" will find memories about CI/CD pipelines, hosting, etc. even if they don't contain the word "deployment."
@@ -230,6 +231,43 @@ Search episodes using semantic similarity and filters.
 - **`hybrid`** — Best of both worlds. Finds results that are both semantically relevant and contain the right words. Will become the default in a future version.
 
 Search results include a `similarity` score (0.0–1.0) in vector and hybrid modes. Keyword mode does not return similarity scores.
+
+### `add_conversation`
+
+Store a multi-turn conversation as a single episode. Messages are formatted into readable `role: content` lines and the raw message array is preserved in the episode's metadata under `messages`. No knowledge triples are created — extraction happens asynchronously via the [Dreamer](architecture.md#layer-2-derived-knowledge-graph-dreamer).
+
+| Parameter  | Required | Description                                                    |
+| ---------- | :------: | -------------------------------------------------------------- |
+| `messages` |   Yes    | Array of `{role, content}` conversation turns, in order        |
+| `source`   |   Yes    | Source client (e.g., `claude-desktop`, `cursor`)               |
+| `name`     |          | Human-readable label for the conversation                      |
+| `group_id` |          | Multi-tenant group (default: `default`)                        |
+| `tags`     |          | Array of tags for categorization                               |
+| `metadata` |          | JSON string, merged with the stored message array              |
+
+### `search_knowledge`
+
+Search knowledge triples (subject-predicate-object facts) by semantic similarity. Results include the subject and object entity names, confidence, and provenance (`source`, `source_episode_id`).
+
+| Parameter        | Required | Description                                    |
+| ---------------- | :------: | ---------------------------------------------- |
+| `query`          |   Yes    | Text to search knowledge facts for             |
+| `group_id`       |          | Filter by group                                |
+| `max_results`    |          | Limit results (default: 10)                    |
+| `min_similarity` |          | Minimum cosine similarity (default: 0.35)      |
+
+### `find_loose_ends`
+
+Surface weakly-connected corners of the memory graph — useful for deciding what to enrich or link next. Returns three sections:
+
+- `unlinked_episodes` — episodes with no episode links and no derived knowledge
+- `dangling_entities` — entities that appear in exactly one knowledge triple
+- `isolated_clusters` — connected components of the episode link graph with 3 or fewer episodes
+
+| Parameter  | Required | Description                             |
+| ---------- | :------: | --------------------------------------- |
+| `group_id` |          | Filter by group                         |
+| `limit`    |          | Maximum items per section (default: 10) |
 
 ### `get_episodes`
 

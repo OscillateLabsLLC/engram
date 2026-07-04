@@ -80,6 +80,14 @@ type KnowledgeTriple struct {
 	ObjectName  string `json:"object_name,omitempty"`
 }
 
+// ValidPredicates is the controlled vocabulary for knowledge triple predicates
+var ValidPredicates = map[string]bool{
+	"owns": true, "works_at": true, "contributes_to": true, "uses": true,
+	"prefers": true, "builds": true, "depends_on": true, "located_in": true,
+	"related_to": true, "part_of": true, "instance_of": true, "created_by": true,
+	"configured_with": true, "deployed_on": true, "communicates_via": true,
+}
+
 // EpisodeLink represents a directional link between two episodes
 type EpisodeLink struct {
 	ID              string    `json:"id"`

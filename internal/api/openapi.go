@@ -399,6 +399,50 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			},
+			"/api/v1/admin/dream": map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary":     "Start a dream pass",
+					"description": "Runs the dreamer over episodes that have not been enriched yet: an LLM extracts knowledge triples which are validated and written to the knowledge graph, and episodes sharing entities are linked. Runs asynchronously; poll GET for progress. Failed episodes are stamped with their error and not retried.",
+					"operationId": "startDream",
+					"requestBody": map[string]interface{}{
+						"required": false,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Dream job started",
+						},
+						"409": map[string]interface{}{
+							"description": "A dream job is already running",
+						},
+						"502": map[string]interface{}{
+							"description": "LLM endpoint unavailable",
+						},
+						"503": map[string]interface{}{
+							"description": "No LLM configured",
+						},
+					},
+				},
+				"get": map[string]interface{}{
+					"summary":     "Get dream status",
+					"description": "Returns the state of the current or most recent dream job plus the count of episodes still awaiting enrichment",
+					"operationId": "getDreamStatus",
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Job status and enrichment backlog",
+						},
+						"503": map[string]interface{}{
+							"description": "No LLM configured",
+						},
+					},
+				},
+			},
 		},
 		"components": map[string]interface{}{
 			"schemas": map[string]interface{}{

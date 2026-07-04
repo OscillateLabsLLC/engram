@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -163,6 +165,12 @@ func (s *Server) registerTools() {
 					"minimum":     0.0,
 					"maximum":     2.0,
 				},
+				"graph_depth": map[string]interface{}{
+					"type":        "integer",
+					"description": "When > 0, walk the episode link graph this many hops from each of the top results and attach the linked episode IDs and relationships under 'linked_episodes'. 0 (default) = no graph traversal.",
+					"minimum":     0,
+					"maximum":     3,
+				},
 			},
 			Required: []string{},
 		},
@@ -305,6 +313,109 @@ func (s *Server) registerTools() {
 		},
 	}, s.handleLinkEpisodes)
 
+	// search_knowledge tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "search_knowledge",
+		Description: "Search knowledge triples (subject-predicate-object facts) by semantic similarity. Returns matching facts with their subject and object entity names, confidence, and provenance.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"query": map[string]interface{}{
+					"type":        "string",
+					"description": "Natural language text to search knowledge facts for",
+				},
+				"group_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Advanced filter: narrow results to a specific group namespace. Omit this in almost all cases.",
+				},
+				"max_results": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum number of triples to return (default: 10)",
+				},
+				"min_similarity": map[string]interface{}{
+					"type":        "number",
+					"description": "Minimum cosine similarity threshold (default: 0.35)",
+					"minimum":     0.0,
+					"maximum":     1.0,
+				},
+			},
+			Required: []string{"query"},
+		},
+	}, s.handleSearchKnowledge)
+
+	// add_conversation tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "add_conversation",
+		Description: "Store a multi-turn conversation as a single episode. Messages are formatted into readable content and the raw message array is preserved in metadata. Knowledge extraction happens asynchronously via the dreamer — this tool does not create triples.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"messages": map[string]interface{}{
+					"type":        "array",
+					"description": "Conversation turns in order",
+					"items": map[string]interface{}{
+						"type": "object",
+						"properties": map[string]interface{}{
+							"role": map[string]interface{}{
+								"type":        "string",
+								"description": "Speaker role (e.g., 'user', 'assistant')",
+							},
+							"content": map[string]interface{}{
+								"type":        "string",
+								"description": "Message text",
+							},
+						},
+						"required": []string{"role", "content"},
+					},
+				},
+				"source": map[string]interface{}{
+					"type":        "string",
+					"description": "Identifier for what created this memory (e.g., 'claude-desktop', 'claude-code')",
+				},
+				"name": map[string]interface{}{
+					"type":        "string",
+					"description": "Human-readable label for the conversation",
+				},
+				"group_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Advanced: namespace for multi-tenant isolation. Omit this in almost all cases.",
+				},
+				"tags": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "string",
+					},
+					"description": "Tags for categorization",
+				},
+				"metadata": map[string]interface{}{
+					"type":        "string",
+					"description": "JSON string with additional metadata (merged with the stored message array)",
+				},
+			},
+			Required: []string{"messages", "source"},
+		},
+	}, s.handleAddConversation)
+
+	// find_loose_ends tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "find_loose_ends",
+		Description: "Surface weakly-connected corners of the memory graph: episodes with no links and no derived knowledge, entities that appear in only one fact, and small isolated clusters of linked episodes. Useful for deciding what to enrich or link next.",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"group_id": map[string]interface{}{
+					"type":        "string",
+					"description": "Advanced filter: narrow results to a specific group namespace. Omit this in almost all cases.",
+				},
+				"limit": map[string]interface{}{
+					"type":        "integer",
+					"description": "Maximum items per section (default: 10)",
+				},
+			},
+			Required: []string{},
+		},
+	}, s.handleFindLooseEnds)
+
 	// get_status tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "get_status",
@@ -410,6 +521,7 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		SearchMode     string   `json:"search_mode"`
 		SearchAlpha    float64  `json:"search_alpha"`
 		TagBoost       float64  `json:"tag_boost"`
+		GraphDepth     int      `json:"graph_depth"`
 	}
 
 	if err := parseParams(request.Params.Arguments, &params); err != nil {
@@ -424,6 +536,11 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 	// Validate search_alpha range
 	if params.SearchAlpha < 0 || params.SearchAlpha > 1 {
 		return mcp.NewToolResultError("search_alpha must be between 0.0 and 1.0"), nil
+	}
+
+	// Validate graph_depth range
+	if params.GraphDepth < 0 || params.GraphDepth > 3 {
+		return mcp.NewToolResultError("graph_depth must be between 0 and 3"), nil
 	}
 
 	// Generate embedding for semantic search (skip for keyword mode)
@@ -479,8 +596,63 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 	}
 
+	// Graph-aware search: attach linked episodes to the top results. Purely
+	// additive — the payload is unchanged when graph_depth is 0/absent.
+	if params.GraphDepth > 0 && len(episodes) > 0 {
+		result, _ := json.Marshal(s.attachLinkedEpisodes(ctx, episodes, params.GraphDepth))
+		return mcp.NewToolResultText(string(result)), nil
+	}
+
 	result, _ := json.Marshal(episodes)
 	return mcp.NewToolResultText(string(result)), nil
+}
+
+// linkedEpisode is a compact reference to an episode reached via graph traversal
+type linkedEpisode struct {
+	EpisodeID    string `json:"episode_id"`
+	Relationship string `json:"relationship"`
+	ViaEntityID  string `json:"via_entity_id,omitempty"`
+}
+
+// episodeWithLinks decorates a search result with graph traversal output
+type episodeWithLinks struct {
+	models.Episode
+	LinkedEpisodes []linkedEpisode `json:"linked_episodes,omitempty"`
+}
+
+// graphSearchTopResults is how many top search results get graph traversal
+const graphSearchTopResults = 5
+
+// attachLinkedEpisodes walks the episode link graph from each of the top
+// results and attaches the episodes it reaches. Traversal failures are
+// logged and skipped — graph decoration never fails a search.
+func (s *Server) attachLinkedEpisodes(ctx context.Context, episodes []models.Episode, depth int) []episodeWithLinks {
+	enriched := make([]episodeWithLinks, len(episodes))
+	for i, ep := range episodes {
+		enriched[i].Episode = ep
+		if i >= graphSearchTopResults {
+			continue
+		}
+		links, err := s.store.TraverseEpisodeLinks(ctx, ep.ID, depth)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: graph traversal failed for episode %s: %v\n", ep.ID, err)
+			continue
+		}
+		seen := map[string]bool{ep.ID: true}
+		for _, link := range links {
+			for _, id := range []string{link.SourceEpisodeID, link.TargetEpisodeID} {
+				if !seen[id] {
+					seen[id] = true
+					enriched[i].LinkedEpisodes = append(enriched[i].LinkedEpisodes, linkedEpisode{
+						EpisodeID:    id,
+						Relationship: link.Relationship,
+						ViaEntityID:  link.ViaEntityID,
+					})
+				}
+			}
+		}
+	}
+	return enriched
 }
 
 func (s *Server) handleGetEpisodes(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -595,13 +767,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 	}
 
 	// Validate predicate against controlled vocabulary
-	validPredicates := map[string]bool{
-		"owns": true, "works_at": true, "contributes_to": true, "uses": true,
-		"prefers": true, "builds": true, "depends_on": true, "located_in": true,
-		"related_to": true, "part_of": true, "instance_of": true, "created_by": true,
-		"configured_with": true, "deployed_on": true, "communicates_via": true,
-	}
-	if !validPredicates[params.Predicate] {
+	if !models.ValidPredicates[params.Predicate] {
 		return mcp.NewToolResultError(fmt.Sprintf("invalid predicate %q: must be one of: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via", params.Predicate)), nil
 	}
 
@@ -722,6 +888,151 @@ func (s *Server) handleLinkEpisodes(ctx context.Context, request mcp.CallToolReq
 		"message": fmt.Sprintf("Linked %s -[%s]-> %s", params.SourceEpisodeID, params.Relationship, params.TargetEpisodeID),
 	})
 
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+// groupIDPattern restricts group_id values passed into SearchKnowledge, which
+// builds its group filter by interpolation
+var groupIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func (s *Server) handleSearchKnowledge(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		Query         string  `json:"query"`
+		GroupID       string  `json:"group_id"`
+		MaxResults    int     `json:"max_results"`
+		MinSimilarity float64 `json:"min_similarity"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+	if params.Query == "" {
+		return mcp.NewToolResultError("query is required"), nil
+	}
+	if params.GroupID != "" && !groupIDPattern.MatchString(params.GroupID) {
+		return mcp.NewToolResultError("group_id may only contain letters, digits, '.', '_' and '-'"), nil
+	}
+
+	embedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	emb, err := s.embedder.Generate(embedCtx, params.Query)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to embed query (knowledge search is vector-based): %v", err)), nil
+	}
+
+	// Store applies defaults: max_results 10, min_similarity 0.35
+	triples, err := s.store.SearchKnowledge(ctx, emb, params.GroupID, params.MaxResults, params.MinSimilarity)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("knowledge search failed: %v", err)), nil
+	}
+	if triples == nil {
+		triples = []models.KnowledgeTriple{}
+	}
+
+	result, _ := json.Marshal(triples)
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (s *Server) handleAddConversation(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+		Source   string   `json:"source"`
+		Name     string   `json:"name"`
+		GroupID  string   `json:"group_id"`
+		Tags     []string `json:"tags"`
+		Metadata string   `json:"metadata"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+	if len(params.Messages) == 0 {
+		return mcp.NewToolResultError("messages is required and must not be empty"), nil
+	}
+	if params.Source == "" {
+		return mcp.NewToolResultError("source is required"), nil
+	}
+
+	// Format turns into readable content
+	var sb strings.Builder
+	for _, msg := range params.Messages {
+		sb.WriteString(msg.Role)
+		sb.WriteString(": ")
+		sb.WriteString(msg.Content)
+		sb.WriteString("\n")
+	}
+	content := sb.String()
+
+	// Preserve the raw message array in metadata, merged with caller metadata
+	meta := map[string]interface{}{}
+	if params.Metadata != "" {
+		if err := json.Unmarshal([]byte(params.Metadata), &meta); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("metadata must be a JSON object: %v", err)), nil
+		}
+	}
+	meta["messages"] = params.Messages
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to encode metadata: %v", err)), nil
+	}
+
+	embedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	emb, err := s.embedder.Generate(embedCtx, content)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to generate embedding: %v\n", err)
+		emb = nil
+	}
+
+	ep := &models.Episode{
+		Content:        content,
+		Name:           params.Name,
+		Source:         params.Source,
+		GroupID:        params.GroupID,
+		Tags:           params.Tags,
+		Embedding:      emb,
+		EmbeddingModel: s.embedder.Model(),
+		Metadata:       string(metaJSON),
+	}
+
+	if err := s.store.InsertEpisode(ctx, ep); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to store conversation: %v", err)), nil
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"success":  true,
+		"id":       ep.ID,
+		"messages": len(params.Messages),
+		"message":  "Conversation stored successfully",
+	})
+
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (s *Server) handleFindLooseEnds(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		GroupID string `json:"group_id"`
+		Limit   int    `json:"limit"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+	if params.Limit <= 0 {
+		params.Limit = 10
+	}
+
+	looseEnds, err := s.store.FindLooseEnds(ctx, params.GroupID, params.Limit)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to find loose ends: %v", err)), nil
+	}
+
+	result, _ := json.Marshal(looseEnds)
 	return mcp.NewToolResultText(string(result)), nil
 }
 

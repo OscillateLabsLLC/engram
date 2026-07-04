@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/oscillatelabsllc/engram/internal/db"
+	"github.com/oscillatelabsllc/engram/internal/dreamer"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
 
@@ -38,13 +39,22 @@ type Server struct {
 	reembedMu     sync.Mutex
 	reembed       ReembedStatus
 	reembedCancel context.CancelFunc
+
+	// Dream job state (see dream.go). dreamer may be nil when no LLM is
+	// configured — the dream endpoints then return 503.
+	dreamer     *dreamer.Dreamer
+	dreamMu     sync.Mutex
+	dream       DreamStatus
+	dreamCancel context.CancelFunc
 }
 
-// NewServer creates a new HTTP API server
-func NewServer(store *db.Store, embedder Embedder, port string) *Server {
+// NewServer creates a new HTTP API server. dreamWorker may be nil when no
+// LLM is configured.
+func NewServer(store *db.Store, embedder Embedder, dreamWorker *dreamer.Dreamer, port string) *Server {
 	s := &Server{
 		store:    store,
 		embedder: embedder,
+		dreamer:  dreamWorker,
 		port:     port,
 	}
 
@@ -97,6 +107,8 @@ func (s *Server) setupRouter() {
 		// Admin operations
 		r.Post("/admin/reembed", s.handleStartReembed)
 		r.Get("/admin/reembed", s.handleGetReembed)
+		r.Post("/admin/dream", s.handleStartDream)
+		r.Get("/admin/dream", s.handleGetDream)
 	})
 
 	s.router = r
@@ -120,6 +132,7 @@ func (s *Server) Serve() error {
 // Shutdown gracefully shuts down the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.stopReembed()
+	s.stopDream()
 	if s.httpServer != nil {
 		return s.httpServer.Shutdown(ctx)
 	}

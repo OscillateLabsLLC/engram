@@ -245,6 +245,9 @@ func (s *Store) migrate() error {
 		`ALTER TABLE episodes ADD COLUMN IF NOT EXISTS embedding_model VARCHAR`,
 		`ALTER TABLE entities ADD COLUMN IF NOT EXISTS embedding_model VARCHAR`,
 		`ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS embedding_model VARCHAR`,
+		// Migration 3: dreamer enrichment stamp — NULL means the episode has
+		// not yet been processed by the knowledge-extraction worker
+		`ALTER TABLE episodes ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`,
 	}
 	for _, stmt := range provenance {
 		if _, err := s.db.Exec(stmt); err != nil {

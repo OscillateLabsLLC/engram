@@ -46,7 +46,7 @@ func setupReembedServer(t *testing.T, embedder Embedder) (*Server, *db.Store) {
 		t.Fatalf("Failed to create test store: %v", err)
 	}
 	t.Cleanup(func() { store.Close() })
-	return NewServer(store, embedder, "0"), store
+	return NewServer(store, embedder, nil, "0"), store
 }
 
 func waitForReembed(t *testing.T, s *Server) ReembedStatus {

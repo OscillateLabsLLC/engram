@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -14,7 +15,9 @@ import (
 
 	"github.com/oscillatelabsllc/engram/internal/api"
 	"github.com/oscillatelabsllc/engram/internal/db"
+	"github.com/oscillatelabsllc/engram/internal/dreamer"
 	"github.com/oscillatelabsllc/engram/internal/embedding"
+	"github.com/oscillatelabsllc/engram/internal/llm"
 	"github.com/oscillatelabsllc/engram/internal/mcp"
 	"github.com/oscillatelabsllc/engram/internal/proxy"
 )
@@ -75,12 +78,64 @@ func runServe(args []string) {
 
 	embeddingAPIKey := os.Getenv("EMBEDDING_API_KEY")
 
+	// Dreamer LLM configuration
+	llmEndpoint := os.Getenv("ENGRAM_LLM_ENDPOINT")
+	if llmEndpoint == "" {
+		llmEndpoint = "http://localhost:11434/v1"
+	}
+
+	llmModel := os.Getenv("ENGRAM_LLM_MODEL")
+	if llmModel == "" {
+		llmModel = "qwen3:8b"
+	}
+
+	llmAPIKey := os.Getenv("ENGRAM_LLM_API_KEY")
+
+	llmTimeout := dreamer.DefaultLLMTimeout
+	if v := os.Getenv("ENGRAM_LLM_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Fatalf("Invalid ENGRAM_LLM_TIMEOUT %q: %v", v, err)
+		}
+		llmTimeout = d
+	}
+
+	llmAdapter := os.Getenv("ENGRAM_LLM_ADAPTER")
+	if llmAdapter == "" {
+		llmAdapter = "openai"
+	}
+
+	claudeBin := os.Getenv("ENGRAM_CLAUDE_BIN")
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
+
+	var dreamInterval time.Duration
+	if v := os.Getenv("ENGRAM_DREAM_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			log.Fatalf("Invalid ENGRAM_DREAM_INTERVAL %q: %v", v, err)
+		}
+		dreamInterval = d
+	}
+
+	var llmClient dreamer.LLM
+	switch llmAdapter {
+	case "openai":
+		llmClient = llm.NewClient(llmEndpoint, llmModel, llmAPIKey, llmTimeout)
+	case "claude-cli":
+		llmClient = llm.NewClaudeCLI(claudeBin)
+	default:
+		log.Fatalf("Unknown ENGRAM_LLM_ADAPTER %q: must be 'openai' or 'claude-cli'", llmAdapter)
+	}
+
 	store, err := db.NewStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
 	embedder := embedding.NewClient(embeddingURL, embeddingModel, embeddingAPIKey)
+	dreamWorker := dreamer.New(store, llmClient, embedder, llmTimeout)
 
 	fmt.Fprintf(os.Stderr, "===================================\n")
 	fmt.Fprintf(os.Stderr, "Engram memory system starting...\n")
@@ -88,6 +143,12 @@ func runServe(args []string) {
 	fmt.Fprintf(os.Stderr, "Database: %s\n", dbPath)
 	fmt.Fprintf(os.Stderr, "Embedding endpoint: %s\n", embeddingURL)
 	fmt.Fprintf(os.Stderr, "Embedding model: %s\n", embeddingModel)
+	fmt.Fprintf(os.Stderr, "LLM adapter: %s (model: %s)\n", llmAdapter, llmClient.Model())
+	if dreamInterval > 0 {
+		fmt.Fprintf(os.Stderr, "Dream interval: %s\n", dreamInterval)
+	} else {
+		fmt.Fprintf(os.Stderr, "Dream interval: disabled (trigger via POST /api/v1/admin/dream)\n")
+	}
 	fmt.Fprintf(os.Stderr, "Port: %s\n", resolvedPort)
 	fmt.Fprintf(os.Stderr, "===================================\n")
 	fmt.Fprintf(os.Stderr, "\nMCP SSE endpoint: http://localhost:%s/mcp/sse\n", resolvedPort)
@@ -106,11 +167,30 @@ func runServe(args []string) {
 	warnCancel()
 
 	mcpServer := mcp.NewServer(store, embedder)
-	apiServer := api.NewServer(store, embedder, resolvedPort)
+	apiServer := api.NewServer(store, embedder, dreamWorker, resolvedPort)
 	apiServer.AddMCPServer(mcpServer.GetMCPServer())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Optional automatic dreaming: trigger the same job runner as the admin
+	// endpoint on a fixed interval, skipping ticks while a job is running
+	if dreamInterval > 0 {
+		ticker := time.NewTicker(dreamInterval)
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := apiServer.TriggerDream(ctx); err != nil && !errors.Is(err, api.ErrDreamRunning) {
+						fmt.Fprintf(os.Stderr, "Warning: scheduled dream did not start: %v\n", err)
+					}
+				}
+			}
+		}()
+	}
 
 	go func() {
 		<-ctx.Done()
