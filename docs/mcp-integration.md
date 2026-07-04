@@ -268,6 +268,16 @@ curl http://localhost:3490/health
 
 Use absolute paths in MCP config, not `./engram` or `~/engram`.
 
+### Search results seem off after switching embedding models
+
+Different embedding models produce incompatible vector spaces. Engram stamps each stored vector with its producing model and warns at startup when stored embeddings don't match the configured `EMBEDDING_MODEL`. Regenerate them with:
+
+```bash
+curl -X POST http://localhost:3490/api/v1/admin/reembed
+```
+
+Poll `GET /api/v1/admin/reembed` for progress. The same endpoint backfills episodes that were stored while the embeddings server was down.
+
 ### "Cannot connect to the embeddings server"
 
 - Verify the server is running (Ollama: `ollama list`, LM Studio: `lms ps`)

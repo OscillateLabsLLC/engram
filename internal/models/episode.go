@@ -13,6 +13,7 @@ type Episode struct {
 	GroupID           string     `json:"group_id"`
 	Tags              []string   `json:"tags,omitempty"`
 	Embedding         []float32  `json:"embedding,omitempty"`
+	EmbeddingModel    string     `json:"embedding_model,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 	ValidAt           *time.Time `json:"valid_at,omitempty"`
 	ExpiredAt         *time.Time `json:"expired_at,omitempty"`
@@ -47,13 +48,14 @@ type UpdateParams struct {
 
 // Entity represents a canonical entity in the knowledge graph
 type Entity struct {
-	ID            string    `json:"id"`
-	CanonicalName string    `json:"canonical_name"`
-	EntityType    string    `json:"entity_type,omitempty"` // person, project, tool, org, concept
-	Embedding     []float32 `json:"embedding,omitempty"`
-	GroupID       string    `json:"group_id"`
-	CreatedAt     time.Time `json:"created_at"`
-	Metadata      string    `json:"metadata,omitempty"` // JSON string
+	ID             string    `json:"id"`
+	CanonicalName  string    `json:"canonical_name"`
+	EntityType     string    `json:"entity_type,omitempty"` // person, project, tool, org, concept
+	Embedding      []float32 `json:"embedding,omitempty"`
+	EmbeddingModel string    `json:"embedding_model,omitempty"`
+	GroupID        string    `json:"group_id"`
+	CreatedAt      time.Time `json:"created_at"`
+	Metadata       string    `json:"metadata,omitempty"` // JSON string
 }
 
 // KnowledgeTriple represents a subject-predicate-object fact in the knowledge graph
@@ -66,6 +68,7 @@ type KnowledgeTriple struct {
 	Source          string     `json:"source"`
 	GroupID         string     `json:"group_id"`
 	Embedding       []float32  `json:"embedding,omitempty"`
+	EmbeddingModel  string     `json:"embedding_model,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`
 	ExpiredAt       *time.Time `json:"expired_at,omitempty"`
 	Confidence      float64    `json:"confidence"`

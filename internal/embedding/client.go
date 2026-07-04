@@ -36,6 +36,11 @@ func NewClient(baseURL, model, apiKey string) *Client {
 	}
 }
 
+// Model returns the embedding model name this client generates with
+func (c *Client) Model() string {
+	return c.model
+}
+
 // resolveEndpoint normalizes a base URL into a full embeddings endpoint
 func resolveEndpoint(baseURL string) string {
 	url := strings.TrimRight(baseURL, "/")

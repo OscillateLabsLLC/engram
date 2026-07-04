@@ -74,6 +74,12 @@ All modes support additional filters:
 
 When a search query is received in vector or hybrid mode, the query text is embedded and results are ranked by `array_cosine_similarity()`. If embedding generation fails (e.g., the embeddings server is down), vector search falls back to chronological ordering and hybrid degrades to keyword-only.
 
+### Embedding provenance and re-embedding
+
+Every stored vector is stamped with the model that produced it (`embedding_model` column on `episodes`, `entities`, and `knowledge`). A row is *stale* when its embedding is missing (the embedding server was down at write time) or was produced by a model other than the one currently configured — both silently degrade vector search because different models occupy different vector spaces.
+
+Engram warns at startup when stale embeddings exist and exposes `POST /api/v1/admin/reembed` to regenerate them asynchronously in place. Embeddings are pure derived data, so the pass never touches episode content; it is idempotent and resumable (keyset pagination, per-row failures are skipped and retried on the next run). `{"force": true}` regenerates every row regardless of provenance. Progress is observable via `GET /api/v1/admin/reembed` and `/api/v1/status`.
+
 ## Layer 2: Derived Knowledge Graph (Future)
 
 A periodic batch process that reads episodes and builds entity/relationship structures. **Not currently implemented.** The episode store alone with semantic search provides the majority of the value.

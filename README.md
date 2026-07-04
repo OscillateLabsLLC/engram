@@ -110,9 +110,26 @@ EMBEDDING_URL=http://localhost:1234/v1 EMBEDDING_MODEL=text-embedding-nomic-embe
 EMBEDDING_URL=http://localhost:11434 EMBEDDING_MODEL=nomic-embed-text engram serve
 ```
 
-> **Note:** Engram's schema stores 768-dimensional vectors, so pick a 768-dim embedding model (the Nomic family fits). Mixing models also mixes vector spaces — if you switch models, re-embed or start a fresh database for sensible similarity scores.
+> **Note:** Engram's schema stores 768-dimensional vectors, so pick a 768-dim embedding model (the Nomic family fits).
 
 See [`.env.example`](.env.example) for a template.
+
+### Switching embedding models
+
+Embeddings from different models live in different vector spaces — mixing them quietly degrades similarity scores. Engram records which model produced each stored vector, warns at startup when stored embeddings don't match the configured model, and can regenerate them in place:
+
+```bash
+# Refresh stale embeddings (missing, or produced by a different model)
+curl -X POST http://localhost:3490/api/v1/admin/reembed
+
+# Re-embed everything regardless of provenance
+curl -X POST http://localhost:3490/api/v1/admin/reembed -d '{"force": true}'
+
+# Check progress and staleness counts
+curl http://localhost:3490/api/v1/admin/reembed
+```
+
+The job runs asynchronously inside the server, only touches derived data (episode content is never modified), and is safe to re-run — anything that fails is retried on the next pass. This is also how you backfill episodes written while the embedding server was down.
 
 ## MCP Client Integration
 

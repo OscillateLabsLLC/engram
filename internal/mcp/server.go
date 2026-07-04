@@ -16,6 +16,8 @@ import (
 // Embedder generates vector embeddings for text
 type Embedder interface {
 	Generate(ctx context.Context, text string) ([]float32, error)
+	// Model returns the embedding model name, used to stamp provenance
+	Model() string
 }
 
 // Server implements the MCP server for Engram
@@ -376,6 +378,7 @@ func (s *Server) handleAddMemory(ctx context.Context, request mcp.CallToolReques
 		GroupID:           params.GroupID,
 		Tags:              params.Tags,
 		Embedding:         emb,
+		EmbeddingModel:    s.embedder.Model(),
 		ValidAt:           validAt,
 		Metadata:          params.Metadata,
 	}
@@ -612,10 +615,11 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 	}
 
 	subjectEntity, err := s.store.InsertEntity(ctx, &models.Entity{
-		CanonicalName: params.Subject,
-		EntityType:    params.SubjectType,
-		Embedding:     subjectEmb,
-		GroupID:       params.GroupID,
+		CanonicalName:  params.Subject,
+		EntityType:     params.SubjectType,
+		Embedding:      subjectEmb,
+		EmbeddingModel: s.embedder.Model(),
+		GroupID:        params.GroupID,
 	}, 0.88)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to resolve subject entity: %v", err)), nil
@@ -631,10 +635,11 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 	}
 
 	objectEntity, err := s.store.InsertEntity(ctx, &models.Entity{
-		CanonicalName: params.Object,
-		EntityType:    params.ObjectType,
-		Embedding:     objectEmb,
-		GroupID:       params.GroupID,
+		CanonicalName:  params.Object,
+		EntityType:     params.ObjectType,
+		Embedding:      objectEmb,
+		EmbeddingModel: s.embedder.Model(),
+		GroupID:        params.GroupID,
 	}, 0.88)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to resolve object entity: %v", err)), nil
@@ -658,6 +663,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 		Source:          params.Source,
 		GroupID:         params.GroupID,
 		Embedding:       tripleEmb,
+		EmbeddingModel:  s.embedder.Model(),
 		Confidence:      1.0, // Client-written triples get full confidence
 	}
 

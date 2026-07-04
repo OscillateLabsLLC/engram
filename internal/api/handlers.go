@@ -116,6 +116,7 @@ func (s *Server) handleAddMemory(w http.ResponseWriter, r *http.Request) {
 		ValidAt:           validAt,
 		Metadata:          req.Metadata,
 		Embedding:         embedding,
+		EmbeddingModel:    s.embedder.Model(),
 	}
 
 	// Store in database
@@ -361,9 +362,23 @@ func (s *Server) handleUpdateEpisode(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	count, err := s.store.CountEpisodes(r.Context())
 
-	successResponse(w, map[string]interface{}{
-		"status":         "operational",
-		"episode_count":  count,
-		"database_ready": err == nil,
-	})
+	s.reembedMu.Lock()
+	reembedRunning := s.reembed.Running
+	s.reembedMu.Unlock()
+
+	resp := map[string]interface{}{
+		"status":          "operational",
+		"episode_count":   count,
+		"database_ready":  err == nil,
+		"embedding_model": s.embedder.Model(),
+		"reembed_running": reembedRunning,
+	}
+
+	// Stale embeddings signal a model swap or past embedding failures;
+	// surface the count so operators know a re-embed is worthwhile
+	if stale, err := s.store.CountReembedTargets(r.Context(), s.embedder.Model(), false); err == nil {
+		resp["stale_embeddings"] = stale.Total()
+	}
+
+	successResponse(w, resp)
 }

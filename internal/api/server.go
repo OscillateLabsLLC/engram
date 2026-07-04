@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,6 +20,8 @@ import (
 // Embedder generates vector embeddings for text
 type Embedder interface {
 	Generate(ctx context.Context, text string) ([]float32, error)
+	// Model returns the embedding model name, used to stamp provenance
+	Model() string
 }
 
 // Server implements the HTTP API server for Engram
@@ -30,6 +33,11 @@ type Server struct {
 	httpServer *http.Server
 	sseServer  *server.SSEServer
 	mcpServer  *server.MCPServer
+
+	// Re-embed job state (see reembed.go)
+	reembedMu     sync.Mutex
+	reembed       ReembedStatus
+	reembedCancel context.CancelFunc
 }
 
 // NewServer creates a new HTTP API server
@@ -85,6 +93,10 @@ func (s *Server) setupRouter() {
 		r.Get("/memory/episodes", s.handleGetEpisodes)
 		r.Put("/memory/episodes/{id}", s.handleUpdateEpisode)
 		r.Get("/status", s.handleGetStatus)
+
+		// Admin operations
+		r.Post("/admin/reembed", s.handleStartReembed)
+		r.Get("/admin/reembed", s.handleGetReembed)
 	})
 
 	s.router = r
@@ -107,6 +119,7 @@ func (s *Server) Serve() error {
 
 // Shutdown gracefully shuts down the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.stopReembed()
 	if s.httpServer != nil {
 		return s.httpServer.Shutdown(ctx)
 	}

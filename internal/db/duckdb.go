@@ -62,6 +62,7 @@ func (s *Store) initialize() error {
 			group_id VARCHAR DEFAULT 'default',
 			tags VARCHAR[],
 			embedding FLOAT[768],
+			embedding_model VARCHAR,
 			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			valid_at TIMESTAMPTZ,
 			expired_at TIMESTAMPTZ,
@@ -88,6 +89,7 @@ func (s *Store) initialize() error {
 			canonical_name TEXT NOT NULL,
 			entity_type VARCHAR,
 			embedding FLOAT[768],
+			embedding_model VARCHAR,
 			group_id VARCHAR DEFAULT 'default',
 			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			metadata JSON
@@ -105,6 +107,7 @@ func (s *Store) initialize() error {
 			source VARCHAR NOT NULL,
 			group_id VARCHAR DEFAULT 'default',
 			embedding FLOAT[768],
+			embedding_model VARCHAR,
 			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 			expired_at TIMESTAMPTZ,
 			confidence FLOAT DEFAULT 1.0,
@@ -236,6 +239,19 @@ func (s *Store) migrate() error {
 		fmt.Fprintf(os.Stderr, "Migration complete.\n")
 	}
 
+	// Migration 2: embedding provenance — records which model produced each
+	// vector so stale embeddings are detectable after a model swap
+	provenance := []string{
+		`ALTER TABLE episodes ADD COLUMN IF NOT EXISTS embedding_model VARCHAR`,
+		`ALTER TABLE entities ADD COLUMN IF NOT EXISTS embedding_model VARCHAR`,
+		`ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS embedding_model VARCHAR`,
+	}
+	for _, stmt := range provenance {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("migration failed (%s): %w", stmt, err)
+		}
+	}
+
 	return nil
 }
 
@@ -277,16 +293,22 @@ func (s *Store) InsertEpisode(ctx context.Context, ep *models.Episode) error {
 		metadataJSON = nil
 	}
 
+	// Only stamp provenance when a vector is actually stored
+	var embeddingModel interface{}
+	if embeddingJSON != nil && ep.EmbeddingModel != "" {
+		embeddingModel = ep.EmbeddingModel
+	}
+
 	query := `
 		INSERT INTO episodes (
 			id, content, name, source, source_model, source_description,
-			group_id, tags, embedding, created_at, valid_at, expired_at, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			group_id, tags, embedding, embedding_model, created_at, valid_at, expired_at, metadata
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err := s.db.ExecContext(ctx, query,
 		ep.ID, ep.Content, ep.Name, ep.Source, ep.SourceModel, ep.SourceDescription,
-		ep.GroupID, tagsJSON, embeddingJSON, ep.CreatedAt, ep.ValidAt, ep.ExpiredAt, metadataJSON,
+		ep.GroupID, tagsJSON, embeddingJSON, embeddingModel, ep.CreatedAt, ep.ValidAt, ep.ExpiredAt, metadataJSON,
 	)
 
 	if err != nil {
@@ -889,10 +911,15 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 		metadataJSON = entity.Metadata
 	}
 
+	var embeddingModel interface{}
+	if embeddingJSON != nil && entity.EmbeddingModel != "" {
+		embeddingModel = entity.EmbeddingModel
+	}
+
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO entities (id, canonical_name, entity_type, embedding, group_id, created_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, entity.ID, entity.CanonicalName, entity.EntityType, embeddingJSON, entity.GroupID, entity.CreatedAt, metadataJSON)
+		INSERT INTO entities (id, canonical_name, entity_type, embedding, embedding_model, group_id, created_at, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, entity.ID, entity.CanonicalName, entity.EntityType, embeddingJSON, embeddingModel, entity.GroupID, entity.CreatedAt, metadataJSON)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert entity: %w", err)
 	}
@@ -953,15 +980,20 @@ func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.Knowle
 		metadataJSON = triple.Metadata
 	}
 
+	var embeddingModel interface{}
+	if embeddingJSON != nil && triple.EmbeddingModel != "" {
+		embeddingModel = triple.EmbeddingModel
+	}
+
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO knowledge (
 			id, subject_entity_id, predicate, object_entity_id,
-			source_episode_id, source, group_id, embedding,
+			source_episode_id, source, group_id, embedding, embedding_model,
 			created_at, expired_at, confidence, verified, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		triple.ID, triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID,
-		triple.SourceEpisodeID, triple.Source, triple.GroupID, embeddingJSON,
+		triple.SourceEpisodeID, triple.Source, triple.GroupID, embeddingJSON, embeddingModel,
 		triple.CreatedAt, triple.ExpiredAt, triple.Confidence, triple.Verified, metadataJSON,
 	)
 	if err != nil {
