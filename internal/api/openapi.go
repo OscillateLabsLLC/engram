@@ -351,6 +351,54 @@ func (s *Server) handleOpenAPISpec(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 			},
+			"/api/v1/admin/reembed": map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary":     "Start a re-embed pass",
+					"description": "Regenerates stored embeddings with the currently configured model. Default mode refreshes only stale rows (missing embedding or produced by a different model); force regenerates everything. Runs asynchronously; poll GET for progress.",
+					"operationId": "startReembed",
+					"requestBody": map[string]interface{}{
+						"required": false,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type": "object",
+									"properties": map[string]interface{}{
+										"force": map[string]interface{}{
+											"type":        "boolean",
+											"description": "Re-embed every row, not just stale ones",
+											"default":     false,
+										},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Re-embed job started",
+						},
+						"400": map[string]interface{}{
+							"description": "Configured model produces the wrong embedding dimensions",
+						},
+						"409": map[string]interface{}{
+							"description": "A re-embed job is already running",
+						},
+						"502": map[string]interface{}{
+							"description": "Embedding endpoint unavailable",
+						},
+					},
+				},
+				"get": map[string]interface{}{
+					"summary":     "Get re-embed status",
+					"description": "Returns the state of the current or most recent re-embed job plus current stale-embedding counts",
+					"operationId": "getReembedStatus",
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Job status and staleness counts",
+						},
+					},
+				},
+			},
 		},
 		"components": map[string]interface{}{
 			"schemas": map[string]interface{}{

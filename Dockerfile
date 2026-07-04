@@ -25,8 +25,10 @@ WORKDIR /
 COPY --from=builder /app/engram /engram
 
 # Default environment variables (can be overridden)
+# EMBEDDING_URL is deliberately NOT set here: baking it in would override a
+# runtime OLLAMA_URL (deprecated alias). The binary defaults to
+# http://localhost:11434 when neither is set.
 ENV DUCKDB_PATH=/data/engram.duckdb
-ENV OLLAMA_URL=http://localhost:11434
 ENV EMBEDDING_MODEL=nomic-embed-text
 
 # Expose HTTP port

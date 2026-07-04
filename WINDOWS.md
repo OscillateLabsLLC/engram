@@ -4,8 +4,8 @@ Quick start guide for running Engram on Windows.
 
 ## Prerequisites
 
-1. **Ollama** - Download and install from [ollama.ai](https://ollama.ai)
-2. **Embedding model** - Pull the model in PowerShell/CMD:
+1. **An OpenAI-compatible embeddings server** - e.g. [Ollama](https://ollama.ai) or [LM Studio](https://lmstudio.ai)
+2. **Embedding model** - Pull a 768-dim model in PowerShell/CMD:
    ```
    ollama pull nomic-embed-text
    ```
@@ -42,7 +42,7 @@ Engram runs as a background server that all your MCP clients connect to. You nee
 ```batch
 @echo off
 set DUCKDB_PATH=C:\Users\YourName\engram\memory.duckdb
-set OLLAMA_URL=http://localhost:11434
+set EMBEDDING_URL=http://localhost:11434
 C:\Users\YourName\engram\engram.exe serve
 ```
 
@@ -58,7 +58,7 @@ Engram will now start automatically on login.
 
 ```powershell
 $env:DUCKDB_PATH = "C:\Users\YourName\engram\memory.duckdb"
-$env:OLLAMA_URL = "http://localhost:11434"
+$env:EMBEDDING_URL = "http://localhost:11434"
 
 .\engram.exe serve
 ```
@@ -67,7 +67,7 @@ $env:OLLAMA_URL = "http://localhost:11434"
 
 ```cmd
 set DUCKDB_PATH=C:\Users\YourName\engram\memory.duckdb
-set OLLAMA_URL=http://localhost:11434
+set EMBEDDING_URL=http://localhost:11434
 
 engram.exe serve
 ```
@@ -129,7 +129,7 @@ claude mcp add engram --transport sse http://localhost:3490/mcp/sse
 
 The stdio proxy (used by Claude Desktop) prints this when the server isn't running. Start `engram serve` first.
 
-### "Cannot connect to Ollama"
+### "Cannot connect to the embeddings server"
 
 1. Check Ollama is running: `ollama list`
 2. Verify the model is installed: `ollama pull nomic-embed-text`

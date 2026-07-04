@@ -1,5 +1,5 @@
 # Docker Compose for Mac/Windows
-# Connects to Ollama running on the host machine
+# Connects to an embeddings server (LM Studio, Ollama, ...) on the host machine
 
 services:
   engram:
@@ -12,7 +12,7 @@ services:
       - engram-data:/data
     environment:
       - DUCKDB_PATH=/data/engram.duckdb
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - EMBEDDING_URL=http://host.docker.internal:11434
       - EMBEDDING_MODEL=nomic-embed-text
     extra_hosts:
       - "host.docker.internal:host-gateway"

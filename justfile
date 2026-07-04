@@ -66,8 +66,8 @@ vet:
 dev:
     #!/usr/bin/env bash
     export DUCKDB_PATH=./dev.duckdb
-    export OLLAMA_URL=http://localhost:11434
-    export EMBEDDING_MODEL=nomic-embed-text
+    export EMBEDDING_URL=${EMBEDDING_URL:-http://localhost:11434}
+    export EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
     ./engram
 
 # Build and run for quick testing
@@ -86,7 +86,7 @@ docker-build-amd64:
 # Run in Docker (one-off container)
 docker-run:
     docker run -it --rm \
-        -e OLLAMA_URL=http://host.docker.internal:11434 \
+        -e EMBEDDING_URL=http://host.docker.internal:11434 \
         -p 8080:8080 \
         -v {{justfile_directory()}}/data:/data \
         engram:latest
@@ -118,12 +118,15 @@ docker-restart:
     @just docker-down
     @just docker-up
 
-# Check if Ollama is running
-check-ollama:
-    @echo "Checking Ollama..."
-    @curl -s http://localhost:11434/api/tags > /dev/null && echo "✅ Ollama is running" || echo "❌ Ollama is not running"
+# Check if the embeddings server is running (works for LM Studio, Ollama, vLLM, ...)
+check-embeddings:
+    #!/usr/bin/env bash
+    url=${EMBEDDING_URL:-http://localhost:11434}
+    url=${url%/}
+    case "$url" in */v1) base=$url ;; *) base=$url/v1 ;; esac
+    curl -s "$base/models" > /dev/null && echo "✅ Embeddings server is running at $url" || echo "❌ No embeddings server at $url"
 
-# Pull required embedding model
+# Pull the default embedding model via Ollama
 setup-ollama:
     ollama pull nomic-embed-text
     @echo "✅ Embedding model ready"
@@ -155,5 +158,5 @@ status:
     @echo "=== Engram Status ==="
     @echo "Go version: $(go version)"
     @echo "Binary exists: $(test -f engram && echo '✅ yes' || echo '❌ no')"
-    @just check-ollama
+    @just check-embeddings
     @echo "====================="

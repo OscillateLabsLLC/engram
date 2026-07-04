@@ -20,7 +20,7 @@ func setupTestServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	embedder := embedding.NewClient("http://localhost:11434", "nomic-embed-text")
+	embedder := embedding.NewClient("http://localhost:11434", "nomic-embed-text", "")
 	return NewServer(store, embedder, "0")
 }
 

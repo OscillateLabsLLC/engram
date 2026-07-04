@@ -1,5 +1,5 @@
 # Docker Compose for Linux
-# Uses host network mode to connect to Ollama on host machine
+# Uses host network mode to connect to an embeddings server on the host machine
 services:
   engram:
     build: .
@@ -10,7 +10,7 @@ services:
       - engram-data:/data
     environment:
       - DUCKDB_PATH=/data/engram.duckdb
-      - OLLAMA_URL=http://localhost:11434
+      - EMBEDDING_URL=http://localhost:11434
       - EMBEDDING_MODEL=nomic-embed-text
 
 volumes:

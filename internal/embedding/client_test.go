@@ -50,7 +50,7 @@ func TestGenerate(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, "test-model")
+		client := NewClient(server.URL, "test-model", "")
 		embedding, err := client.Generate(context.Background(), "test text")
 
 		if err != nil {
@@ -73,7 +73,7 @@ func TestGenerate(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, "nonexistent-model")
+		client := NewClient(server.URL, "nonexistent-model", "")
 		_, err := client.Generate(context.Background(), "test text")
 
 		if err == nil {
@@ -95,7 +95,7 @@ func TestGenerate(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, "test-model")
+		client := NewClient(server.URL, "test-model", "")
 		_, err := client.Generate(context.Background(), "test text")
 
 		if err == nil {
@@ -113,7 +113,7 @@ func TestGenerate(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, "test-model")
+		client := NewClient(server.URL, "test-model", "")
 		_, err := client.Generate(context.Background(), "test text")
 
 		if err == nil {
@@ -127,7 +127,7 @@ func TestGenerate(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, "test-model")
+		client := NewClient(server.URL, "test-model", "")
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
@@ -140,11 +140,70 @@ func TestGenerate(t *testing.T) {
 
 	t.Run("handles connection refused", func(t *testing.T) {
 		// Use a port that's definitely not listening
-		client := NewClient("http://localhost:59999", "test-model")
+		client := NewClient("http://localhost:59999", "test-model", "")
 		_, err := client.Generate(context.Background(), "test text")
 
 		if err == nil {
 			t.Fatal("Expected error for connection refused")
 		}
 	})
+
+	t.Run("sends bearer token when API key is set", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Errorf("Expected Authorization 'Bearer test-key', got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(embedResponse{Data: []struct {
+				Embedding []float32 `json:"embedding"`
+			}{{Embedding: []float32{0.1}}}})
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "test-key")
+		if _, err := client.Generate(context.Background(), "test text"); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("omits authorization header without API key", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("Expected no Authorization header, got %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(embedResponse{Data: []struct {
+				Embedding []float32 `json:"embedding"`
+			}{{Embedding: []float32{0.1}}}})
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "")
+		if _, err := client.Generate(context.Background(), "test text"); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	})
+}
+
+func TestResolveEndpoint(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"bare host (Ollama style)", "http://localhost:11434", "http://localhost:11434/v1/embeddings"},
+		{"trailing slash", "http://localhost:11434/", "http://localhost:11434/v1/embeddings"},
+		{"v1 prefix (LM Studio / OpenAI style)", "http://localhost:1234/v1", "http://localhost:1234/v1/embeddings"},
+		{"v1 prefix with trailing slash", "http://localhost:1234/v1/", "http://localhost:1234/v1/embeddings"},
+		{"full embeddings endpoint", "https://api.openai.com/v1/embeddings", "https://api.openai.com/v1/embeddings"},
+		{"proxy path with v1", "https://gateway.example.com/openai/v1", "https://gateway.example.com/openai/v1/embeddings"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveEndpoint(tc.baseURL); got != tc.want {
+				t.Errorf("resolveEndpoint(%q) = %q, want %q", tc.baseURL, got, tc.want)
+			}
+		})
+	}
 }

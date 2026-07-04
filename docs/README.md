@@ -23,7 +23,7 @@ Engram is an event-sourced memory system for AI agents. It stores episodes relia
 - Semantic search via vector similarity
 - Graceful fallback when embeddings are unavailable
 - Fast queries (sub-100ms with HNSW indexing)
-- Local embeddings via Ollama
+- Local embeddings via any OpenAI-compatible server (LM Studio, Ollama, vLLM, ...)
 - Single portable binary
 - MCP native integration
 

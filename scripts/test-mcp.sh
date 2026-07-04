@@ -9,7 +9,7 @@ echo
 
 # Set environment
 export DUCKDB_PATH="./test.duckdb"
-export OLLAMA_URL="http://localhost:11434"
+export EMBEDDING_URL="http://localhost:11434"
 export EMBEDDING_MODEL="nomic-embed-text"
 
 # Start server and send initialize request

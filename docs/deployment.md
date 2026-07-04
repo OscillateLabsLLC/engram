@@ -12,7 +12,7 @@ For local development with persistent storage and auto-restart:
 just docker-up
 ```
 
-This uses `docker-compose.yml` which connects to Ollama on your host machine via `host.docker.internal`.
+This uses `docker-compose.yml` which connects to an embeddings server (LM Studio, Ollama, ...) on your host machine via `host.docker.internal`.
 
 ### Linux
 
@@ -20,7 +20,7 @@ This uses `docker-compose.yml` which connects to Ollama on your host machine via
 just docker-up-linux
 ```
 
-This uses `docker-compose.linux.yml` which uses host networking to connect to Ollama.
+This uses `docker-compose.linux.yml` which uses host networking to connect to the embeddings server.
 
 ### Common Commands
 
@@ -48,7 +48,7 @@ services:
       - engram-data:/data
     environment:
       - DUCKDB_PATH=/data/engram.duckdb
-      - OLLAMA_URL=http://host.docker.internal:11434
+      - EMBEDDING_URL=http://host.docker.internal:11434
       - EMBEDDING_MODEL=nomic-embed-text
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -68,7 +68,7 @@ networks:
 - `restart: unless-stopped` — starts with Docker and keeps running
 - `extra_hosts` — ensures proper host connectivity on macOS
 - Named volume `engram-data` — persists database across restarts
-- `host.docker.internal` — connects to Ollama running on host
+- `host.docker.internal` — connects to the embeddings server running on host
 
 ### Linux Configuration
 
@@ -85,7 +85,7 @@ services:
       - engram-data:/data
     environment:
       - DUCKDB_PATH=/data/engram.duckdb
-      - OLLAMA_URL=http://localhost:11434
+      - EMBEDDING_URL=http://localhost:11434
       - EMBEDDING_MODEL=nomic-embed-text
 
 volumes:
@@ -95,7 +95,7 @@ volumes:
 
 **Key differences:**
 - `network_mode: host` — container shares host network stack
-- `OLLAMA_URL=http://localhost:11434` — direct localhost connection
+- `EMBEDDING_URL=http://localhost:11434` — direct localhost connection
 - No explicit port mapping needed (host mode)
 
 ## Manual Docker Usage
@@ -103,7 +103,7 @@ volumes:
 ```bash
 docker build -t engram .
 docker run -p 3490:3490 \
-           -e OLLAMA_URL=http://host.docker.internal:11434 \
+           -e EMBEDDING_URL=http://host.docker.internal:11434 \
            -v $(pwd)/data:/data \
            -e DUCKDB_PATH=/data/engram.duckdb \
            engram
@@ -136,7 +136,7 @@ spec:
           env:
             - name: DUCKDB_PATH
               value: "/data/engram.duckdb"
-            - name: OLLAMA_URL
+            - name: EMBEDDING_URL
               value: "http://ollama-service:11434"
             - name: EMBEDDING_MODEL
               value: "nomic-embed-text"
@@ -202,13 +202,13 @@ spec:
 
 ## Troubleshooting
 
-### Docker on macOS: Cannot connect to Ollama
+### Docker on macOS: Cannot connect to the embeddings server
 
-If you see connection errors to Ollama:
+If you see connection errors to the embeddings server (e.g., Ollama):
 
 1. Verify Ollama is running: `ollama list`
 2. Check the `extra_hosts` configuration is present in `docker-compose.yml`
-3. Try accessing Ollama from within the container:
+3. Try accessing the embeddings server from within the container:
    ```bash
    docker exec -it engram /bin/sh
    curl http://host.docker.internal:11434/api/tags

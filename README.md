@@ -21,7 +21,7 @@ Most AI memory systems couple write reliability to LLM availability by performin
 - **Three search modes** — find memories by meaning (vector), by exact words (keyword), or both at once (hybrid)
 - **Graceful fallback** — keyword search works even when the embedding service is unavailable; hybrid degrades gracefully
 - **Fast queries** — DuckDB HNSW indexing for sub-100ms vector search
-- **Zero external APIs** — all embeddings generated locally via Ollama
+- **Bring your own embeddings** — works with any OpenAI-compatible endpoint: LM Studio, Ollama, llama.cpp, or hosted providers
 - **Single binary** — portable across Linux, macOS, and Windows
 - **MCP native** — integrates directly with Claude Desktop, Claude Code, and Cursor
 
@@ -29,7 +29,7 @@ Most AI memory systems couple write reliability to LLM availability by performin
 
 ### Prerequisites
 
-- [Ollama](https://ollama.ai) running locally (or remotely) with an embedding model
+- An OpenAI-compatible embeddings server with a 768-dimensional embedding model (e.g., `nomic-embed-text`). [LM Studio](https://lmstudio.ai) and [Ollama](https://ollama.ai) both work out of the box, locally or remotely.
 - Go 1.25+ (only if building from source)
 
 ### Install
@@ -65,9 +65,13 @@ just setup    # install deps, pull embedding model, build
 go build -o engram ./cmd/engram/main.go
 ```
 
-### Pull the embedding model
+### Get the embedding model
 
 ```bash
+# LM Studio
+lms get text-embedding-nomic-embed-text-v1.5
+
+# Ollama
 ollama pull nomic-embed-text
 ```
 
@@ -85,15 +89,47 @@ Engram starts on port 3490 and prints the SSE endpoint URL. All MCP clients conn
 
 Configure via environment variables:
 
-| Variable            | Description                             | Default                  |
-| ------------------- | --------------------------------------- | ------------------------ |
-| `DUCKDB_PATH`       | Path to DuckDB database file            | `./engram.duckdb`        |
-| `OLLAMA_URL`        | Ollama API endpoint                     | `http://localhost:11434` |
-| `EMBEDDING_MODEL`   | Embedding model name                    | `nomic-embed-text`       |
-| `ENGRAM_PORT`       | Server port                             | `3490`                   |
-| `ENGRAM_SERVER_URL` | Server URL (used by stdio proxy)        | `http://localhost:3490`  |
+| Variable            | Description                                             | Default                  |
+| ------------------- | ------------------------------------------------------- | ------------------------ |
+| `DUCKDB_PATH`       | Path to DuckDB database file                            | `./engram.duckdb`        |
+| `EMBEDDING_URL`     | OpenAI-compatible embeddings endpoint                   | `http://localhost:11434` |
+| `EMBEDDING_MODEL`   | Embedding model name                                    | `nomic-embed-text`       |
+| `EMBEDDING_API_KEY` | Bearer token for the embeddings endpoint (if required)  | _(none)_                 |
+| `ENGRAM_PORT`       | Server port                                             | `3490`                   |
+| `ENGRAM_SERVER_URL` | Server URL (used by stdio proxy)                        | `http://localhost:3490`  |
+
+`EMBEDDING_URL` accepts a bare host (`http://localhost:11434`), a `/v1` base (`http://localhost:1234/v1`), or a full `/v1/embeddings` endpoint — Engram normalizes it. `OLLAMA_URL` is still honored as a deprecated alias for `EMBEDDING_URL`.
+
+Examples:
+
+```bash
+# LM Studio
+EMBEDDING_URL=http://localhost:1234/v1 EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5 engram serve
+
+# Ollama (the default)
+EMBEDDING_URL=http://localhost:11434 EMBEDDING_MODEL=nomic-embed-text engram serve
+```
+
+> **Note:** Engram's schema stores 768-dimensional vectors, so pick a 768-dim embedding model (the Nomic family fits).
 
 See [`.env.example`](.env.example) for a template.
+
+### Switching embedding models
+
+Embeddings from different models live in different vector spaces — mixing them quietly degrades similarity scores. Engram records which model produced each stored vector, warns at startup when stored embeddings don't match the configured model, and can regenerate them in place:
+
+```bash
+# Refresh stale embeddings (missing, or produced by a different model)
+curl -X POST http://localhost:3490/api/v1/admin/reembed
+
+# Re-embed everything regardless of provenance
+curl -X POST http://localhost:3490/api/v1/admin/reembed -d '{"force": true}'
+
+# Check progress and staleness counts
+curl http://localhost:3490/api/v1/admin/reembed
+```
+
+The job runs asynchronously inside the server, only touches derived data (episode content is never modified), and is safe to re-run — anything that fails is retried on the next pass. This is also how you backfill episodes written while the embedding server was down.
 
 ## MCP Client Integration
 
@@ -182,7 +218,7 @@ engram/
 ├── internal/
 │   ├── api/             # HTTP + MCP SSE server
 │   ├── db/              # DuckDB operations + VSS
-│   ├── embedding/       # Ollama client
+│   ├── embedding/       # OpenAI-compatible embeddings client
 │   ├── mcp/             # MCP tool definitions
 │   ├── models/          # Data models
 │   └── proxy/           # stdio-to-SSE proxy
@@ -194,7 +230,7 @@ engram/
 - **Server-first**: `engram serve` owns DuckDB exclusively, exposes MCP over SSE + REST API
 - **Thin stdio proxy**: `engram stdio` bridges stdin/stdout to the server for clients that require stdio (e.g., Claude Desktop)
 - **DuckDB** with VSS extension for vector similarity search (HNSW indexing)
-- **Ollama** for local embedding generation (768-dimensional, `nomic-embed-text`)
+- **OpenAI-compatible embeddings** — LM Studio, Ollama, llama.cpp, or hosted providers (768-dimensional, e.g. `nomic-embed-text`)
 
 For a deeper dive into the architecture, see [`docs/architecture.md`](docs/architecture.md).
 
