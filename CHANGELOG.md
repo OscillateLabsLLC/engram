@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.6.0](https://github.com/OscillateLabsLLC/engram/compare/v2.5.1...v2.6.0) (2026-07-04)
+
+
+### Features
+
+* OpenAI-compatible embedding endpoints + provenance-tracked re-embedding ([96d8de4](https://github.com/OscillateLabsLLC/engram/commit/96d8de40f09e61fa6e2d0f72a2dc76c2f8eed2a7))
+* support any OpenAI-compatible embeddings endpoint ([b5546fd](https://github.com/OscillateLabsLLC/engram/commit/b5546fd6a846e05b62ea000713d409e2563a3c72))
+* track embedding provenance and add re-embed admin endpoint ([ac7a026](https://github.com/OscillateLabsLLC/engram/commit/ac7a026e0ea14e295a7b7739caaa7a929a0e3327))
+
 ## [2.5.1](https://github.com/OscillateLabsLLC/engram/compare/v2.5.0...v2.5.1) (2026-04-23)
 
 
