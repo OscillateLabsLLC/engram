@@ -43,8 +43,14 @@ func (s *Store) TraverseEpisodeLinks(ctx context.Context, startEpisodeID string,
 			JOIN walk w ON (l.source_episode_id = w.frontier OR l.target_episode_id = w.frontier)
 			WHERE w.hop < ?
 		)
-		SELECT DISTINCT id, source_episode_id, target_episode_id, relationship, via_entity_id, weight, created_at
-		FROM walk
+		SELECT id, source_episode_id, target_episode_id, relationship, via_entity_id, weight, created_at
+		FROM (
+			SELECT *, MIN(hop) OVER (PARTITION BY id) AS min_hop,
+			       ROW_NUMBER() OVER (PARTITION BY id ORDER BY hop) AS rn
+			FROM walk
+		)
+		WHERE rn = 1
+		ORDER BY min_hop, created_at
 		LIMIT %d
 	`, traverseMaxLinks)
 

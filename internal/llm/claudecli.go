@@ -31,18 +31,31 @@ func (c *ClaudeCLI) Model() string {
 	return "claude-cli"
 }
 
-// cliEnvelope is the JSON envelope `claude -p --output-format json` prints
+// cliEnvelope is one JSON object printed by `claude -p --output-format json`.
+// Depending on CLI version the top level is either a single result object or
+// an array of event objects where the final `type: "result"` item carries the
+// structured output.
 type cliEnvelope struct {
+	Type             string          `json:"type"`
 	Result           string          `json:"result"`
 	StructuredOutput json.RawMessage `json:"structured_output"`
 }
 
 // ChatJSON invokes the CLI in print mode with a JSON schema and returns the
-// structured output. Falls back to parsing the result field as JSON when the
-// envelope carries no structured_output.
+// structured output. The subprocess runs with ALL tools disabled — episode
+// content is untrusted input, and an extraction call must not be able to read
+// files or run commands regardless of what that content asks for. The system
+// prompt is passed via --system-prompt so untrusted content on stdin cannot
+// displace the extraction instructions.
 func (c *ClaudeCLI) ChatJSON(ctx context.Context, system, user, schema string) (json.RawMessage, error) {
-	cmd := exec.CommandContext(ctx, c.binary, "-p", "--output-format", "json", "--json-schema", schema)
-	cmd.Stdin = strings.NewReader(system + "\n\n" + user)
+	cmd := exec.CommandContext(ctx, c.binary,
+		"-p",
+		"--tools", "",
+		"--system-prompt", system,
+		"--output-format", "json",
+		"--json-schema", schema,
+	)
+	cmd.Stdin = strings.NewReader(user)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -52,9 +65,9 @@ func (c *ClaudeCLI) ChatJSON(ctx context.Context, system, user, schema string) (
 		return nil, fmt.Errorf("claude CLI failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
-	var envelope cliEnvelope
-	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
-		return nil, fmt.Errorf("failed to parse claude CLI output: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	envelope, err := parseCLIOutput(stdout.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
 	if len(envelope.StructuredOutput) > 0 && string(envelope.StructuredOutput) != "null" {
@@ -66,4 +79,29 @@ func (c *ClaudeCLI) ChatJSON(ctx context.Context, system, user, schema string) (
 		return nil, fmt.Errorf("claude CLI returned no structured output and result is not valid JSON: %s", truncate(result, 200))
 	}
 	return json.RawMessage(result), nil
+}
+
+// parseCLIOutput handles both envelope shapes: a single result object (as
+// documented) or an array of event objects (observed on CLI 2.1.x), where the
+// result payload is the item with type "result".
+func parseCLIOutput(out []byte) (*cliEnvelope, error) {
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		var events []cliEnvelope
+		if err := json.Unmarshal(trimmed, &events); err != nil {
+			return nil, fmt.Errorf("failed to parse claude CLI event array: %w", err)
+		}
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Type == "result" {
+				return &events[i], nil
+			}
+		}
+		return nil, fmt.Errorf("claude CLI event array contained no result item")
+	}
+
+	var envelope cliEnvelope
+	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse claude CLI output: %w", err)
+	}
+	return &envelope, nil
 }

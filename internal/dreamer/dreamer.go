@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,7 +48,18 @@ const (
 
 // extractionSystemPrompt instructs the model; the deterministic validation
 // pipeline below enforces every rule it states.
-const extractionSystemPrompt = "You extract knowledge triples from text. Output only JSON matching the schema. Rules: subject and object MUST be entity names that appear in or are directly implied by the text. predicate MUST be one of: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via. confidence is 0.0-1.0 reflecting how explicitly the text states the fact. Extract at most 10 triples. If no clear facts exist, return an empty list."
+var extractionSystemPrompt = "You extract knowledge triples from text. Output only JSON matching the schema. Rules: subject and object MUST be entity names that appear in or are directly implied by the text. predicate MUST be one of: " + strings.Join(sortedPredicates(), ", ") + ". confidence is 0.0-1.0 reflecting how explicitly the text states the fact. Extract at most 10 triples. If no clear facts exist, return an empty list."
+
+// sortedPredicates renders models.ValidPredicates deterministically so the
+// prompt can never drift from the validation whitelist
+func sortedPredicates() []string {
+	preds := make([]string, 0, len(models.ValidPredicates))
+	for p := range models.ValidPredicates {
+		preds = append(preds, p)
+	}
+	sort.Strings(preds)
+	return preds
+}
 
 // extractionSchema is the JSON schema for the extraction envelope
 const extractionSchema = `{"type":"object","properties":{"triples":{"type":"array","items":{"type":"object","properties":{"subject":{"type":"string"},"predicate":{"type":"string"},"object":{"type":"string"},"subject_type":{"type":"string"},"object_type":{"type":"string"},"confidence":{"type":"number"}},"required":["subject","predicate","object","confidence"]}}},"required":["triples"]}`
