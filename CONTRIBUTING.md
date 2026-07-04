@@ -7,7 +7,7 @@ Thanks for your interest in contributing! This document provides guidelines for 
 ### Prerequisites
 
 - Go 1.25 or higher
-- Ollama with `nomic-embed-text` model
+- An OpenAI-compatible embeddings server (LM Studio, Ollama, ...) with a 768-dim model such as `nomic-embed-text`
 - Git
 
 ### Getting Started
@@ -56,7 +56,7 @@ engram/
 ├── cmd/engram/          # Main application entry point
 ├── internal/
 │   ├── db/              # DuckDB operations
-│   ├── embedding/       # Ollama client for embeddings
+│   ├── embedding/       # OpenAI-compatible embeddings client
 │   ├── mcp/             # MCP server implementation
 │   └── models/          # Data models
 ├── docs/                # Architecture and design docs
@@ -137,10 +137,10 @@ go test ./...
 
 ### Integration Tests
 
-Requires Ollama running:
+Requires an embeddings server running (Ollama shown; any OpenAI-compatible endpoint works):
 
 ```bash
-export OLLAMA_URL=http://localhost:11434
+export EMBEDDING_URL=http://localhost:11434
 go test -tags=integration ./...
 ```
 

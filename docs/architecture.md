@@ -53,7 +53,7 @@ CREATE INDEX idx_episodes_source ON episodes (source);
 ### Write Path
 
 1. Receive episode text + metadata
-2. Generate embedding via Ollama (e.g., `nomic-embed-text`, 768 dimensions)
+2. Generate embedding via the configured OpenAI-compatible server (e.g., `nomic-embed-text`, 768 dimensions)
 3. Insert into DuckDB
 4. If embedding service is unavailable: insert with NULL embedding, queue for retry
 5. Return success to caller immediately
@@ -63,7 +63,7 @@ CREATE INDEX idx_episodes_source ON episodes (source);
 Three search modes, selectable via the `search_mode` parameter:
 
 - **Vector (default):** Finds memories by meaning. Uses HNSW vector index with cosine similarity — "deployment preferences" matches memories about CI/CD even without that exact phrase.
-- **Keyword:** Finds memories by exact words. Uses DuckDB's FTS extension (BM25 scoring) on `content` and `name` fields. No embedding required — works even when Ollama is down.
+- **Keyword:** Finds memories by exact words. Uses DuckDB's FTS extension (BM25 scoring) on `content` and `name` fields. No embedding required — works even when the embeddings server is down.
 - **Hybrid:** Combines both approaches with configurable weighting (alpha, default 0.7 favoring semantic). BM25 scores are min-max normalized to [0,1] before combining with cosine similarity.
 
 All modes support additional filters:
@@ -72,7 +72,7 @@ All modes support additional filters:
 - **Tag-based:** List containment queries
 - **Combined:** All of the above in a single query
 
-When a search query is received in vector or hybrid mode, the query text is embedded and results are ranked by `array_cosine_similarity()`. If embedding generation fails (e.g., Ollama is down), vector search falls back to chronological ordering and hybrid degrades to keyword-only.
+When a search query is received in vector or hybrid mode, the query text is embedded and results are ranked by `array_cosine_similarity()`. If embedding generation fails (e.g., the embeddings server is down), vector search falls back to chronological ordering and hybrid degrades to keyword-only.
 
 ## Layer 2: Derived Knowledge Graph (Future)
 
@@ -113,7 +113,7 @@ Engram uses a **server-first architecture** to avoid DuckDB's single-writer file
 
 - **Database:** DuckDB with VSS and FTS extensions — single-file, portable, HNSW indexing for vector search, BM25 indexing for full-text search, native LIST and JSON support
 - **Application:** Go with official MCP SDK — single static binary, cross-platform
-- **Embeddings:** Ollama — local generation, OpenAI-compatible `/v1/embeddings` endpoint, no external API costs
+- **Embeddings:** any OpenAI-compatible `/v1/embeddings` server — LM Studio, Ollama, vLLM, llama.cpp, or hosted providers; local generation means no external API costs
 - **Default port:** 3490 (configurable via `ENGRAM_PORT`)
 
 ## Deployment Options

@@ -37,7 +37,7 @@ Create `~/Library/LaunchAgents/com.engram.server.plist`:
     <dict>
         <key>DUCKDB_PATH</key>
         <string>/Users/YOUR_USERNAME/Library/Application Support/Engram/memory.duckdb</string>
-        <key>OLLAMA_URL</key>
+        <key>EMBEDDING_URL</key>
         <string>http://localhost:11434</string>
     </dict>
     <key>RunAtLoad</key>
@@ -71,7 +71,7 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/engram serve
 Environment=DUCKDB_PATH=%h/.local/share/engram/memory.duckdb
-Environment=OLLAMA_URL=http://localhost:11434
+Environment=EMBEDDING_URL=http://localhost:11434
 Restart=on-failure
 
 [Install]
@@ -157,7 +157,8 @@ Any client that supports SSE can connect to `http://localhost:3490/mcp/sse`. Cli
 | Variable | Default | Description |
 |---|---|---|
 | `DUCKDB_PATH` | `./engram.duckdb` | Path to the DuckDB database file |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama server endpoint |
+| `EMBEDDING_URL` | `http://localhost:11434` | OpenAI-compatible embeddings endpoint (LM Studio: `http://localhost:1234/v1`) |
+| `EMBEDDING_API_KEY` | _(none)_ | Bearer token for the embeddings endpoint, if required |
 | `EMBEDDING_MODEL` | `nomic-embed-text` | Embedding model name |
 | `ENGRAM_PORT` | `3490` | Server port |
 | `ENGRAM_SERVER_URL` | `http://localhost:3490` | Server URL (used by stdio proxy) |
@@ -185,7 +186,7 @@ To verify semantic search is working (not just returning recent results):
 2. Search for something semantically related to an _older_ memory
 3. If the older, relevant memory ranks higher than recent unrelated ones, vector search is active
 
-Check logs for `Generated query embedding with 768 dimensions`. If you see `Failed to generate query embedding`, Ollama may be down — Engram falls back to chronological ordering gracefully.
+Check logs for `Generated query embedding with 768 dimensions`. If you see `Failed to generate query embedding`, the embeddings server may be down — Engram falls back to chronological ordering gracefully.
 
 ## Available MCP Tools
 
@@ -225,7 +226,7 @@ Search episodes using semantic similarity and filters.
 
 **Which mode should I use?**
 - **`vector`** (default) — Best when you want conceptually similar results. "What are my deployment preferences?" will find memories about CI/CD pipelines, hosting, etc. even if they don't contain the word "deployment."
-- **`keyword`** — Best when you know the exact words. Useful when Ollama is down, or when you need precise term matching.
+- **`keyword`** — Best when you know the exact words. Useful when the embeddings server is down, or when you need precise term matching.
 - **`hybrid`** — Best of both worlds. Finds results that are both semantically relevant and contain the right words. Will become the default in a future version.
 
 Search results include a `similarity` score (0.0–1.0) in vector and hybrid modes. Keyword mode does not return similarity scores.
@@ -267,9 +268,9 @@ curl http://localhost:3490/health
 
 Use absolute paths in MCP config, not `./engram` or `~/engram`.
 
-### "Cannot connect to Ollama"
+### "Cannot connect to the embeddings server"
 
-- Verify Ollama is running: `ollama list`
+- Verify the server is running (Ollama: `ollama list`, LM Studio: `lms ps`)
 - Check URL is `http://localhost:11434` (not `https`)
 
 ### "Database permission denied"
@@ -278,4 +279,4 @@ Make sure the directory for `DUCKDB_PATH` is writable.
 
 ### Search results seem chronological, not semantic
 
-Check logs for `Generated query embedding with 768 dimensions`. If you see `Failed to generate query embedding`, Ollama may be down — Engram falls back to chronological ordering gracefully.
+Check logs for `Generated query embedding with 768 dimensions`. If you see `Failed to generate query embedding`, the embeddings server may be down — Engram falls back to chronological ordering gracefully.

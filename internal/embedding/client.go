@@ -7,24 +7,45 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// Client handles communication with Ollama for embeddings
+// Client handles communication with any OpenAI-compatible embeddings API
+// (Ollama, LM Studio, OpenAI, etc.)
 type Client struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	endpoint string
+	model    string
+	apiKey   string
+	client   *http.Client
 }
 
-// NewClient creates a new Ollama embedding client
-func NewClient(baseURL, model string) *Client {
+// NewClient creates a new embedding client for an OpenAI-compatible server.
+// baseURL may be a bare host (http://localhost:11434), include the /v1
+// prefix (http://localhost:1234/v1), or be a full embeddings endpoint
+// (https://api.openai.com/v1/embeddings). apiKey is optional; when set it
+// is sent as a Bearer token.
+func NewClient(baseURL, model, apiKey string) *Client {
 	return &Client{
-		baseURL: baseURL,
-		model:   model,
+		endpoint: resolveEndpoint(baseURL),
+		model:    model,
+		apiKey:   apiKey,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+// resolveEndpoint normalizes a base URL into a full embeddings endpoint
+func resolveEndpoint(baseURL string) string {
+	url := strings.TrimRight(baseURL, "/")
+	switch {
+	case strings.HasSuffix(url, "/embeddings"):
+		return url
+	case strings.HasSuffix(url, "/v1"):
+		return url + "/embeddings"
+	default:
+		return url + "/v1/embeddings"
 	}
 }
 
@@ -53,13 +74,15 @@ func (c *Client) Generate(ctx context.Context, text string) ([]float32, error) {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/v1/embeddings", c.baseURL)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {

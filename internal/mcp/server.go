@@ -10,19 +10,23 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/oscillatelabsllc/engram/internal/db"
-	"github.com/oscillatelabsllc/engram/internal/embedding"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
+
+// Embedder generates vector embeddings for text
+type Embedder interface {
+	Generate(ctx context.Context, text string) ([]float32, error)
+}
 
 // Server implements the MCP server for Engram
 type Server struct {
 	store     *db.Store
-	embedder  *embedding.Client
+	embedder  Embedder
 	mcpServer *server.MCPServer
 }
 
 // NewServer creates a new MCP server
-func NewServer(store *db.Store, embedder *embedding.Client) *Server {
+func NewServer(store *db.Store, embedder Embedder) *Server {
 	s := &Server{
 		store:    store,
 		embedder: embedder,
@@ -418,8 +422,6 @@ func (s *Server) handleSearch(ctx context.Context, request mcp.CallToolRequest) 
 	if params.SearchAlpha < 0 || params.SearchAlpha > 1 {
 		return mcp.NewToolResultError("search_alpha must be between 0.0 and 1.0"), nil
 	}
-
-
 
 	// Generate embedding for semantic search (skip for keyword mode)
 	var queryEmbedding []float32

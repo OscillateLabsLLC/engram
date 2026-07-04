@@ -58,9 +58,13 @@ func runServe(args []string) {
 		dbPath = filepath.Join(".", "engram.duckdb")
 	}
 
-	ollamaURL := os.Getenv("OLLAMA_URL")
-	if ollamaURL == "" {
-		ollamaURL = "http://localhost:11434"
+	embeddingURL := os.Getenv("EMBEDDING_URL")
+	if embeddingURL == "" {
+		// OLLAMA_URL is deprecated; kept for backward compatibility
+		embeddingURL = os.Getenv("OLLAMA_URL")
+	}
+	if embeddingURL == "" {
+		embeddingURL = "http://localhost:11434"
 	}
 
 	embeddingModel := os.Getenv("EMBEDDING_MODEL")
@@ -68,18 +72,20 @@ func runServe(args []string) {
 		embeddingModel = "nomic-embed-text"
 	}
 
+	embeddingAPIKey := os.Getenv("EMBEDDING_API_KEY")
+
 	store, err := db.NewStore(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 
-	embedder := embedding.NewClient(ollamaURL, embeddingModel)
+	embedder := embedding.NewClient(embeddingURL, embeddingModel, embeddingAPIKey)
 
 	fmt.Fprintf(os.Stderr, "===================================\n")
 	fmt.Fprintf(os.Stderr, "Engram memory system starting...\n")
 	fmt.Fprintf(os.Stderr, "Mode: serve\n")
 	fmt.Fprintf(os.Stderr, "Database: %s\n", dbPath)
-	fmt.Fprintf(os.Stderr, "Ollama: %s\n", ollamaURL)
+	fmt.Fprintf(os.Stderr, "Embedding endpoint: %s\n", embeddingURL)
 	fmt.Fprintf(os.Stderr, "Embedding model: %s\n", embeddingModel)
 	fmt.Fprintf(os.Stderr, "Port: %s\n", resolvedPort)
 	fmt.Fprintf(os.Stderr, "===================================\n")
@@ -120,4 +126,3 @@ func runStdio() {
 		os.Exit(1)
 	}
 }
-

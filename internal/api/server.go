@@ -13,14 +13,18 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/oscillatelabsllc/engram/internal/db"
-	"github.com/oscillatelabsllc/engram/internal/embedding"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
+
+// Embedder generates vector embeddings for text
+type Embedder interface {
+	Generate(ctx context.Context, text string) ([]float32, error)
+}
 
 // Server implements the HTTP API server for Engram
 type Server struct {
 	store      *db.Store
-	embedder   *embedding.Client
+	embedder   Embedder
 	router     *chi.Mux
 	port       string
 	httpServer *http.Server
@@ -29,7 +33,7 @@ type Server struct {
 }
 
 // NewServer creates a new HTTP API server
-func NewServer(store *db.Store, embedder *embedding.Client, port string) *Server {
+func NewServer(store *db.Store, embedder Embedder, port string) *Server {
 	s := &Server{
 		store:    store,
 		embedder: embedder,
