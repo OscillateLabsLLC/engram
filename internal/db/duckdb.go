@@ -42,12 +42,20 @@ func NewStore(dbPath string) (*Store, error) {
 // initialize sets up the database schema and extensions
 func (s *Store) initialize() error {
 	// Install and load VSS extension as separate calls so the download
-	// completes before LOAD attempts to use the file.
+	// completes before LOAD attempts to use the file. Like FTS below, LOAD
+	// can race the INSTALL download flush (and concurrent test processes
+	// share the extensions dir), so retry once after a brief pause.
 	if _, err := s.db.Exec("INSTALL vss"); err != nil {
 		return fmt.Errorf("failed to install VSS extension: %w", err)
 	}
 	if _, err := s.db.Exec("LOAD vss"); err != nil {
-		return fmt.Errorf("failed to load VSS extension: %w", err)
+		time.Sleep(100 * time.Millisecond)
+		if _, err := s.db.Exec("INSTALL vss"); err != nil {
+			return fmt.Errorf("failed to install VSS extension on retry: %w", err)
+		}
+		if _, err := s.db.Exec("LOAD vss"); err != nil {
+			return fmt.Errorf("failed to load VSS extension: %w", err)
+		}
 	}
 
 	schema := `
@@ -156,6 +164,15 @@ func (s *Store) initialize() error {
 	} else {
 		s.ftsAvailable = true
 		s.ftsStale = true
+	}
+
+	// Flush startup DDL (schema creation, migrations) out of the WAL.
+	// Leaving ALTER TABLE entries in the WAL risks bricking the database:
+	// DuckDB's WAL replay of ALTERs on tables with function defaults
+	// (CURRENT_TIMESTAMP) fails with an internal error, and the file then
+	// refuses to open. Checkpointing here closes that window.
+	if _, err := s.db.Exec("CHECKPOINT"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: post-migration checkpoint failed: %v\n", err)
 	}
 
 	return nil
@@ -1133,6 +1150,8 @@ func (s *Store) GetEpisodeLinks(ctx context.Context, episodeID string) ([]models
 
 // Close closes the database connection
 func (s *Store) Close() error {
+	// Best-effort checkpoint so no WAL is left behind (see initialize note)
+	_, _ = s.db.Exec("CHECKPOINT")
 	return s.db.Close()
 }
 
