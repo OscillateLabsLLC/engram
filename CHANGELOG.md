@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.6.1](https://github.com/OscillateLabsLLC/engram/compare/v2.6.0...v2.6.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* checkpoint WAL after startup DDL and wait for store close on shutdown ([7ea26e5](https://github.com/OscillateLabsLLC/engram/commit/7ea26e564b95b63018b2532a7a2e9094f3e6201a))
+* retry VSS extension load like FTS ([014cf33](https://github.com/OscillateLabsLLC/engram/commit/014cf335d43edcd3651aa3fa26d2ffc5b0ec2f70))
+* WAL checkpoint durability — prevent database bricking on restart ([32a9766](https://github.com/OscillateLabsLLC/engram/commit/32a97669604b64539c9cbc8f942588e2a1c56f86))
+
 ## [2.6.0](https://github.com/OscillateLabsLLC/engram/compare/v2.5.1...v2.6.0) (2026-07-04)
 
 
