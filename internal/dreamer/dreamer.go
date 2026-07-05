@@ -8,6 +8,7 @@ package dreamer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -36,6 +37,10 @@ type Embedder interface {
 const (
 	// batchSize is how many unenriched episodes are fetched per crawl page
 	batchSize = 50
+
+	// maxConsecutiveLLMFailures aborts a crawl when the LLM endpoint appears
+	// down or rate-limited — every remaining episode would burn a failed call
+	maxConsecutiveLLMFailures = 5
 	// maxTriplesPerEpisode caps how many validated triples are stored per episode
 	maxTriplesPerEpisode = 10
 	// entityResolutionThreshold is passed to InsertEntity for entity dedup
@@ -95,12 +100,21 @@ func (d *Dreamer) Probe(ctx context.Context) error {
 	return err
 }
 
+// ErrLLMFailure marks failures of the LLM call itself (endpoint down, rate
+// limit, timeout). Episodes hitting it are left unenriched so a later run
+// retries them, unlike content-shaped failures which are stamped.
+var ErrLLMFailure = errors.New("llm call failed")
+
 // Process crawls unenriched episodes in batches until none remain or the
-// context is cancelled. Per-episode failures are logged and stamped, never
-// fatal. onEpisode, when non-nil, is invoked after each episode with whether
-// it failed — used by the admin job for progress reporting.
+// context is cancelled. Content-shaped failures (bad extraction payload) are
+// logged and stamped so poison episodes never loop; LLM-call failures leave
+// the episode unenriched for a later run, and a streak of them aborts the
+// crawl entirely — a dead endpoint would fail every remaining episode.
+// onEpisode, when non-nil, is invoked after each episode with whether it
+// failed — used by the admin job for progress reporting.
 func (d *Dreamer) Process(ctx context.Context, onEpisode func(failed bool)) error {
 	attempted := map[string]bool{}
+	consecutiveLLMFailures := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -131,6 +145,16 @@ func (d *Dreamer) Process(ctx context.Context, onEpisode func(failed bool)) erro
 			if onEpisode != nil {
 				onEpisode(err != nil)
 			}
+
+			if errors.Is(err, ErrLLMFailure) {
+				consecutiveLLMFailures++
+				if consecutiveLLMFailures >= maxConsecutiveLLMFailures {
+					return fmt.Errorf("aborting crawl after %d consecutive LLM failures (endpoint down or rate-limited; unprocessed episodes remain queued): %w",
+						consecutiveLLMFailures, err)
+				}
+			} else {
+				consecutiveLLMFailures = 0
+			}
 		}
 
 		if len(episodes) == 0 || !progressed {
@@ -140,15 +164,16 @@ func (d *Dreamer) Process(ctx context.Context, onEpisode func(failed bool)) erro
 }
 
 // ProcessEpisode extracts triples from a single episode and writes entities,
-// knowledge, and episode links. On LLM or parse failure the episode is still
-// stamped enriched with the error recorded in its metadata, so poison
-// episodes are never retried.
+// knowledge, and episode links. A parse failure (bad payload from a working
+// endpoint) stamps the episode enriched with the error recorded in metadata
+// so poison episodes are never retried; a failure of the LLM call itself
+// returns ErrLLMFailure and leaves the episode unenriched for a later run.
 func (d *Dreamer) ProcessEpisode(ctx context.Context, ep *models.Episode) error {
 	llmCtx, cancel := context.WithTimeout(ctx, d.llmTimeout)
 	raw, err := d.llm.ChatJSON(llmCtx, extractionSystemPrompt, buildUserMessage(ep), extractionSchema)
 	cancel()
 	if err != nil {
-		return d.failEnrichment(ctx, ep.ID, fmt.Errorf("llm extraction failed: %w", err))
+		return fmt.Errorf("%w: %v", ErrLLMFailure, err)
 	}
 
 	triples, err := validateExtraction(raw, ep.Name+"\n"+ep.Content)

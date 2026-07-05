@@ -238,22 +238,50 @@ func TestProcessEpisode(t *testing.T) {
 		}
 	})
 
-	t.Run("stamps enriched with error metadata on LLM failure", func(t *testing.T) {
+	t.Run("leaves episode unenriched on LLM failure", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{err: errors.New("connection refused")}
 		d := New(store, llm, &fakeEmbedder{}, time.Second)
 		ep := insertEpisode(t, store, &models.Episode{
-			Content: "poison", Source: "test", Metadata: `{"kept":"yes"}`,
+			Content: "transient", Source: "test", Metadata: `{"kept":"yes"}`,
+		})
+
+		err := d.ProcessEpisode(context.Background(), ep)
+		if !errors.Is(err, ErrLLMFailure) {
+			t.Fatalf("Expected ErrLLMFailure, got %v", err)
+		}
+
+		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		if count != 1 {
+			t.Error("LLM-call failure must leave the episode queued for a later run")
+		}
+		got, err := store.GetEpisode(context.Background(), ep.ID)
+		if err != nil {
+			t.Fatalf("GetEpisode failed: %v", err)
+		}
+		if got.Metadata != `{"kept":"yes"}` {
+			t.Errorf("Metadata must be untouched on transient failure, got %q", got.Metadata)
+		}
+	})
+
+	t.Run("stamps enriched with error on unparseable payload", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: json.RawMessage(`"not an object"`)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		ep := insertEpisode(t, store, &models.Episode{
+			Content: "whatever", Source: "test", Metadata: `{"kept":"yes"}`,
 		})
 
 		err := d.ProcessEpisode(context.Background(), ep)
 		if err == nil {
-			t.Fatal("Expected error from LLM failure")
+			t.Fatal("Expected error from unparseable payload")
 		}
-
+		if errors.Is(err, ErrLLMFailure) {
+			t.Error("Parse failure must not be classified as an LLM-call failure")
+		}
 		count, _ := store.CountUnenrichedEpisodes(context.Background())
 		if count != 0 {
-			t.Error("Failed episode must still be stamped enriched (poison pill protection)")
+			t.Error("Unparseable episode must still be stamped enriched (poison pill protection)")
 		}
 
 		got, err := store.GetEpisode(context.Background(), ep.ID)
@@ -267,23 +295,8 @@ func TestProcessEpisode(t *testing.T) {
 		if meta["kept"] != "yes" {
 			t.Error("Existing metadata clobbered")
 		}
-		if msg, _ := meta["enrichment_error"].(string); !strings.Contains(msg, "connection refused") {
+		if msg, _ := meta["enrichment_error"].(string); !strings.Contains(msg, "invalid") {
 			t.Errorf("Expected enrichment_error with cause, got %v", meta["enrichment_error"])
-		}
-	})
-
-	t.Run("stamps enriched with error on unparseable payload", func(t *testing.T) {
-		store := setupTestStore(t)
-		llm := &fakeLLM{response: json.RawMessage(`"not an object"`)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
-		ep := insertEpisode(t, store, &models.Episode{Content: "whatever", Source: "test"})
-
-		if err := d.ProcessEpisode(context.Background(), ep); err == nil {
-			t.Fatal("Expected error from unparseable payload")
-		}
-		count, _ := store.CountUnenrichedEpisodes(context.Background())
-		if count != 0 {
-			t.Error("Unparseable episode must still be stamped enriched")
 		}
 	})
 
@@ -402,7 +415,7 @@ func TestProcess(t *testing.T) {
 		llm.mu.Unlock()
 	})
 
-	t.Run("counts failures but keeps going", func(t *testing.T) {
+	t.Run("counts failures below the breaker threshold and keeps going", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{err: errors.New("llm down")}
 		d := New(store, llm, &fakeEmbedder{}, time.Second)
@@ -418,14 +431,40 @@ func TestProcess(t *testing.T) {
 			}
 		})
 		if err != nil {
-			t.Fatalf("Process should not be fatal on per-episode failures: %v", err)
+			t.Fatalf("Two failures are below the breaker threshold, should not be fatal: %v", err)
 		}
 		if done != 2 || failed != 2 {
 			t.Errorf("Expected 2 done / 2 failed, got %d/%d", done, failed)
 		}
 		count, _ := store.CountUnenrichedEpisodes(context.Background())
-		if count != 0 {
-			t.Errorf("Failed episodes must be stamped, %d remain", count)
+		if count != 2 {
+			t.Errorf("LLM-failed episodes must stay queued for retry, got %d remaining", count)
+		}
+	})
+
+	t.Run("aborts after consecutive LLM failures", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{err: errors.New("llm down")}
+		d := New(store, llm, &fakeEmbedder{}, time.Second)
+
+		for i := 0; i < maxConsecutiveLLMFailures+3; i++ {
+			insertEpisode(t, store, &models.Episode{Content: fmt.Sprintf("ep %d", i), Source: "test"})
+		}
+
+		var done int
+		err := d.Process(context.Background(), func(bool) { done++ })
+		if err == nil {
+			t.Fatal("Expected crawl abort after consecutive LLM failures")
+		}
+		if !errors.Is(err, ErrLLMFailure) {
+			t.Errorf("Abort error should wrap ErrLLMFailure, got %v", err)
+		}
+		if done != maxConsecutiveLLMFailures {
+			t.Errorf("Expected exactly %d attempts before abort, got %d", maxConsecutiveLLMFailures, done)
+		}
+		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		if count != maxConsecutiveLLMFailures+3 {
+			t.Errorf("All episodes must remain queued after abort, got %d", count)
 		}
 	})
 
