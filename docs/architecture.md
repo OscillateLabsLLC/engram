@@ -88,7 +88,8 @@ Key properties:
 
 - **Async, never in the write path** — episodes are stored instantly; enrichment happens later in a background job
 - **Derived data only** — episode content is never modified; the graph can always be rebuilt from the episode log
-- **Deterministic validation pipeline** — LLM output is filtered before anything is written: predicates must come from the controlled vocabulary, confidence is clamped to [0,1], triples whose subject and object both fail to appear in the episode text are rejected as hallucinations, and at most 10 triples are stored per episode
+- **Deterministic validation pipeline** — LLM output is filtered before anything is written: predicates must come from the controlled vocabulary, confidence is clamped to [0,1], and both subject and object must be *grounded* — appearing in the episode text (case-insensitive), matching a configured owner alias (`ENGRAM_OWNER_ALIASES`; with built-ins `I`, `me`, `my`, `user`, `the user`), or resolving to an already-existing entity in the episode's group. At most 20 triples are stored per episode, keeping the highest-confidence ones when the model returns more
+- **Skip tags** — episodes carrying any tag in `ENGRAM_DREAM_SKIP_TAGS` are never crawled nor stamped; removing the tag later makes them eligible again
 - **Failures don't loop** — each episode is processed once; LLM or parse failures stamp the episode with an `enrichment_error` in its metadata rather than retrying forever
 - **Pluggable LLM** — an OpenAI-compatible chat endpoint (default, works with Ollama/LM Studio) or the Claude Code CLI as a subprocess
 

@@ -50,7 +50,7 @@ func (s *Server) handleStartDream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := s.store.CountUnenrichedEpisodes(r.Context())
+	count, err := s.store.CountUnenrichedEpisodes(r.Context(), s.dreamer.SkipTags())
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "failed to count unenriched episodes: "+err.Error())
 		return
@@ -88,7 +88,7 @@ func (s *Server) handleGetDream(w http.ResponseWriter, r *http.Request) {
 	status := s.dream
 	s.dreamMu.Unlock()
 
-	count, err := s.store.CountUnenrichedEpisodes(r.Context())
+	count, err := s.store.CountUnenrichedEpisodes(r.Context(), s.dreamer.SkipTags())
 	if err != nil {
 		errorResponse(w, http.StatusInternalServerError, "failed to count unenriched episodes: "+err.Error())
 		return
@@ -114,7 +114,7 @@ func (s *Server) TriggerDream(ctx context.Context) error {
 		return fmt.Errorf("LLM endpoint unavailable: %w", err)
 	}
 
-	count, err := s.store.CountUnenrichedEpisodes(ctx)
+	count, err := s.store.CountUnenrichedEpisodes(ctx, s.dreamer.SkipTags())
 	if err != nil {
 		return fmt.Errorf("failed to count unenriched episodes: %w", err)
 	}

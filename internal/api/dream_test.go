@@ -46,7 +46,7 @@ func setupDreamServer(t *testing.T, llm dreamer.LLM) (*Server, *db.Store) {
 	embedder := &fakeEmbedder{model: "fake-embed", dims: 768}
 	var d *dreamer.Dreamer
 	if llm != nil {
-		d = dreamer.New(store, llm, embedder, 5*time.Second)
+		d = dreamer.New(store, llm, embedder, 5*time.Second, nil, nil)
 	}
 	return NewServer(store, embedder, d, "0"), store
 }
@@ -95,7 +95,7 @@ func TestDreamEndpoint(t *testing.T) {
 			t.Errorf("Expected 2 done / 0 failed, got %d/%d", status.Done, status.Failed)
 		}
 
-		count, err := store.CountUnenrichedEpisodes(ctx)
+		count, err := store.CountUnenrichedEpisodes(ctx, nil)
 		if err != nil {
 			t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
 		}
@@ -128,7 +128,7 @@ func TestDreamEndpoint(t *testing.T) {
 		}
 
 		// Poison episode was stamped, not left to loop
-		count, _ := store.CountUnenrichedEpisodes(ctx)
+		count, _ := store.CountUnenrichedEpisodes(ctx, nil)
 		if count != 0 {
 			t.Errorf("Expected poison episode stamped, %d remain", count)
 		}

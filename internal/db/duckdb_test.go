@@ -1632,7 +1632,10 @@ func TestInsertEntity(t *testing.T) {
 			EntityType:    "person",
 		}, 0.88)
 		if err != nil {
-			t.Fatalf("Failed to insert: %v", err)
+			t.Fatalf("Failed to get entity: %v", err)
+		}
+		if entity.CanonicalName != "RetrieveMe" {
+			t.Errorf("Expected 'RetrieveMe', got %q", entity.CanonicalName)
 		}
 
 		retrieved, err := store.GetEntity(ctx, entity.ID)
@@ -1641,6 +1644,132 @@ func TestInsertEntity(t *testing.T) {
 		}
 		if retrieved.CanonicalName != "RetrieveMe" {
 			t.Errorf("Expected 'RetrieveMe', got %q", retrieved.CanonicalName)
+		}
+	})
+
+	t.Run("normalizes entity_type to lowercase trimmed", func(t *testing.T) {
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "MixedCaseTypeEntity",
+			EntityType:    "  Person  ",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if entity.EntityType != "person" {
+			t.Errorf("Expected entity_type normalized to 'person', got %q", entity.EntityType)
+		}
+
+		retrieved, err := store.GetEntity(ctx, entity.ID)
+		if err != nil {
+			t.Fatalf("Failed to get entity: %v", err)
+		}
+		if retrieved.EntityType != "person" {
+			t.Errorf("Expected stored entity_type 'person', got %q", retrieved.EntityType)
+		}
+	})
+
+	t.Run("literal 'entity' type is stored as empty (non-type)", func(t *testing.T) {
+		entity, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "GenericEntity",
+			EntityType:    "Entity",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+		if entity.EntityType != "" {
+			t.Errorf("Expected entity_type 'Entity' normalized to empty, got %q", entity.EntityType)
+		}
+
+		retrieved, err := store.GetEntity(ctx, entity.ID)
+		if err != nil {
+			t.Fatalf("Failed to get entity: %v", err)
+		}
+		if retrieved.EntityType != "" {
+			t.Errorf("Expected stored entity_type empty, got %q", retrieved.EntityType)
+		}
+	})
+}
+
+func TestLookupEntity(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	t.Run("returns nil, nil when absent", func(t *testing.T) {
+		entity, err := store.LookupEntity(ctx, "NoSuchEntity", "default")
+		if err != nil {
+			t.Fatalf("LookupEntity failed: %v", err)
+		}
+		if entity != nil {
+			t.Errorf("Expected nil entity, got %+v", entity)
+		}
+	})
+
+	t.Run("finds case-insensitive exact match without inserting", func(t *testing.T) {
+		created, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "LookupMike",
+			EntityType:    "person",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+
+		found, err := store.LookupEntity(ctx, "lookupmike", "default")
+		if err != nil {
+			t.Fatalf("LookupEntity failed: %v", err)
+		}
+		if found == nil {
+			t.Fatal("Expected entity to be found")
+		}
+		if found.ID != created.ID {
+			t.Errorf("Expected ID %s, got %s", created.ID, found.ID)
+		}
+
+		count, err := store.countEntitiesNamed(ctx, "LookupMike", "default")
+		if err != nil {
+			t.Fatalf("countEntitiesNamed failed: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("LookupEntity must not insert a duplicate, found %d rows", count)
+		}
+	})
+
+	t.Run("finds normalized match without inserting", func(t *testing.T) {
+		created, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "Look-Up Labs",
+			EntityType:    "organization",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+
+		found, err := store.LookupEntity(ctx, "LookUpLabs", "default")
+		if err != nil {
+			t.Fatalf("LookupEntity failed: %v", err)
+		}
+		if found == nil {
+			t.Fatal("Expected entity to be found via normalized match")
+		}
+		if found.ID != created.ID {
+			t.Errorf("Expected ID %s, got %s", created.ID, found.ID)
+		}
+	})
+
+	t.Run("respects group scoping", func(t *testing.T) {
+		_, err := store.InsertEntity(ctx, &models.Entity{
+			CanonicalName: "GroupScopedEntity",
+			GroupID:       "group-x",
+		}, 0.88)
+		if err != nil {
+			t.Fatalf("Failed to insert: %v", err)
+		}
+
+		found, err := store.LookupEntity(ctx, "GroupScopedEntity", "group-y")
+		if err != nil {
+			t.Fatalf("LookupEntity failed: %v", err)
+		}
+		if found != nil {
+			t.Errorf("Expected no match in a different group, got %+v", found)
 		}
 	})
 }
@@ -1693,6 +1822,91 @@ func TestInsertKnowledgeTriple(t *testing.T) {
 		}
 		if triple.Confidence != 0.72 {
 			t.Errorf("Expected confidence 0.72, got %f", triple.Confidence)
+		}
+	})
+
+	t.Run("skips self-loop triples", func(t *testing.T) {
+		before, err := store.countKnowledgeRows(ctx)
+		if err != nil {
+			t.Fatalf("countKnowledgeRows failed: %v", err)
+		}
+		triple := &models.KnowledgeTriple{
+			SubjectEntityID: subject.ID,
+			Predicate:       "related_to",
+			ObjectEntityID:  subject.ID,
+			Source:          "test",
+		}
+		if err := store.InsertKnowledgeTriple(ctx, triple); err != nil {
+			t.Fatalf("InsertKnowledgeTriple should not error on self-loop, got: %v", err)
+		}
+		after, err := store.countKnowledgeRows(ctx)
+		if err != nil {
+			t.Fatalf("countKnowledgeRows failed: %v", err)
+		}
+		if after != before {
+			t.Errorf("Expected self-loop triple to be skipped, row count went from %d to %d", before, after)
+		}
+	})
+
+	t.Run("skips duplicate triples", func(t *testing.T) {
+		dupSubject, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "DupSubject"}, 0.88)
+		dupObject, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "DupObject"}, 0.88)
+
+		first := &models.KnowledgeTriple{
+			SubjectEntityID: dupSubject.ID,
+			Predicate:       "uses",
+			ObjectEntityID:  dupObject.ID,
+			Source:          "test",
+			GroupID:         "default",
+		}
+		if err := store.InsertKnowledgeTriple(ctx, first); err != nil {
+			t.Fatalf("Failed to insert first triple: %v", err)
+		}
+
+		before, err := store.countKnowledgeRows(ctx)
+		if err != nil {
+			t.Fatalf("countKnowledgeRows failed: %v", err)
+		}
+
+		dup := &models.KnowledgeTriple{
+			SubjectEntityID: dupSubject.ID,
+			Predicate:       "uses",
+			ObjectEntityID:  dupObject.ID,
+			Source:          "test-again",
+			GroupID:         "default",
+		}
+		if err := store.InsertKnowledgeTriple(ctx, dup); err != nil {
+			t.Fatalf("InsertKnowledgeTriple should not error on duplicate, got: %v", err)
+		}
+
+		after, err := store.countKnowledgeRows(ctx)
+		if err != nil {
+			t.Fatalf("countKnowledgeRows failed: %v", err)
+		}
+		if after != before {
+			t.Errorf("Expected duplicate triple to be skipped, row count went from %d to %d", before, after)
+		}
+	})
+
+	t.Run("allows same subject/object pair with a different predicate", func(t *testing.T) {
+		s2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "MultiPredSubject"}, 0.88)
+		o2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "MultiPredObject"}, 0.88)
+
+		if err := store.InsertKnowledgeTriple(ctx, &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID, Source: "test",
+		}); err != nil {
+			t.Fatalf("Failed to insert first triple: %v", err)
+		}
+		before, _ := store.countKnowledgeRows(ctx)
+
+		if err := store.InsertKnowledgeTriple(ctx, &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "depends_on", ObjectEntityID: o2.ID, Source: "test",
+		}); err != nil {
+			t.Fatalf("Failed to insert second triple: %v", err)
+		}
+		after, _ := store.countKnowledgeRows(ctx)
+		if after != before+1 {
+			t.Errorf("Expected a distinct predicate to be inserted, row count went from %d to %d", before, after)
 		}
 	})
 }
@@ -1889,4 +2103,23 @@ func setupTestStore(t *testing.T) *Store {
 		t.Fatalf("Failed to create test store: %v", err)
 	}
 	return store
+}
+
+// countEntitiesNamed counts rows in entities matching name (case-insensitive)
+// within a group — used to assert LookupEntity never inserts.
+func (s *Store) countEntitiesNamed(ctx context.Context, name, groupID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM entities WHERE LOWER(canonical_name) = LOWER(?) AND group_id = ?",
+		name, groupID,
+	).Scan(&count)
+	return count, err
+}
+
+// countKnowledgeRows counts all rows in the knowledge table — used to assert
+// InsertKnowledgeTriple skips self-loops and duplicates.
+func (s *Store) countKnowledgeRows(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM knowledge").Scan(&count)
+	return count, err
 }

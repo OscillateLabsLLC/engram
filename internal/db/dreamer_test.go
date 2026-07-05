@@ -36,7 +36,7 @@ func TestListUnenrichedEpisodes(t *testing.T) {
 	})
 
 	t.Run("returns unenriched episodes oldest first", func(t *testing.T) {
-		episodes, err := store.ListUnenrichedEpisodes(ctx, 10)
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 10, nil)
 		if err != nil {
 			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
 		}
@@ -61,7 +61,7 @@ func TestListUnenrichedEpisodes(t *testing.T) {
 	})
 
 	t.Run("respects limit", func(t *testing.T) {
-		episodes, err := store.ListUnenrichedEpisodes(ctx, 1)
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 1, nil)
 		if err != nil {
 			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
 		}
@@ -77,7 +77,7 @@ func TestListUnenrichedEpisodes(t *testing.T) {
 		if err := store.MarkEpisodeEnriched(ctx, ep1.ID, ""); err != nil {
 			t.Fatalf("MarkEpisodeEnriched failed: %v", err)
 		}
-		episodes, err := store.ListUnenrichedEpisodes(ctx, 10)
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 10, nil)
 		if err != nil {
 			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
 		}
@@ -92,12 +92,121 @@ func TestListUnenrichedEpisodes(t *testing.T) {
 	})
 }
 
+func TestListUnenrichedEpisodesSkipTags(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	tagged := insertTestEpisode(t, store, &models.Episode{
+		Content: "skip me", Source: "test", Tags: []string{"private", "journal"},
+	})
+	untagged := insertTestEpisode(t, store, &models.Episode{
+		Content: "process me", Source: "test", Tags: []string{"journal"},
+	})
+
+	t.Run("tagged episode is excluded, untagged sibling is listed", func(t *testing.T) {
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 10, []string{"private", "secret"})
+		if err != nil {
+			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
+		}
+		if len(episodes) != 1 {
+			t.Fatalf("Expected 1 episode (tagged one skipped), got %d", len(episodes))
+		}
+		if episodes[0].ID != untagged.ID {
+			t.Errorf("Expected untagged episode %s, got %s", untagged.ID, episodes[0].ID)
+		}
+	})
+
+	t.Run("episode with no tags at all remains eligible", func(t *testing.T) {
+		noTags := insertTestEpisode(t, store, &models.Episode{
+			Content: "tagless", Source: "test",
+		})
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 10, []string{"private"})
+		if err != nil {
+			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
+		}
+		found := false
+		for _, ep := range episodes {
+			if ep.ID == noTags.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("Episode with NULL tags must not be excluded by the skip filter")
+		}
+
+		count, err := store.CountUnenrichedEpisodes(ctx, []string{"private"})
+		if err != nil {
+			t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("Expected 2 (untagged sibling + NULL-tags episode), got %d", count)
+		}
+	})
+
+	t.Run("empty skip list leaves behavior unchanged", func(t *testing.T) {
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 10, nil)
+		if err != nil {
+			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
+		}
+		if len(episodes) != 3 {
+			t.Fatalf("Expected all three episodes with empty skip list, got %d", len(episodes))
+		}
+	})
+
+	t.Run("removing the tag makes the episode eligible again", func(t *testing.T) {
+		if err := store.UpdateEpisode(ctx, tagged.ID, models.UpdateParams{Tags: &[]string{}}); err != nil {
+			t.Fatalf("UpdateEpisode failed: %v", err)
+		}
+		episodes, err := store.ListUnenrichedEpisodes(ctx, 10, []string{"private"})
+		if err != nil {
+			t.Fatalf("ListUnenrichedEpisodes failed: %v", err)
+		}
+		if len(episodes) != 3 {
+			t.Errorf("Expected all three episodes once the skip tag is removed, got %d", len(episodes))
+		}
+	})
+}
+
+func TestCountUnenrichedEpisodesSkipTags(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	insertTestEpisode(t, store, &models.Episode{
+		Content: "skip me", Source: "test", Tags: []string{"private"},
+	})
+	insertTestEpisode(t, store, &models.Episode{
+		Content: "count me", Source: "test", Tags: []string{"journal"},
+	})
+
+	t.Run("tagged episode is not counted", func(t *testing.T) {
+		count, err := store.CountUnenrichedEpisodes(ctx, []string{"private"})
+		if err != nil {
+			t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("Expected 1 (tagged episode excluded), got %d", count)
+		}
+	})
+
+	t.Run("empty skip list counts everything", func(t *testing.T) {
+		count, err := store.CountUnenrichedEpisodes(ctx, nil)
+		if err != nil {
+			t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
+		}
+		if count != 2 {
+			t.Errorf("Expected 2 with empty skip list, got %d", count)
+		}
+	})
+}
+
 func TestCountUnenrichedEpisodes(t *testing.T) {
 	store := setupTestStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
-	count, err := store.CountUnenrichedEpisodes(ctx)
+	count, err := store.CountUnenrichedEpisodes(ctx, nil)
 	if err != nil {
 		t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
 	}
@@ -108,7 +217,7 @@ func TestCountUnenrichedEpisodes(t *testing.T) {
 	ep := insertTestEpisode(t, store, &models.Episode{Content: "one", Source: "test"})
 	insertTestEpisode(t, store, &models.Episode{Content: "two", Source: "test"})
 
-	count, err = store.CountUnenrichedEpisodes(ctx)
+	count, err = store.CountUnenrichedEpisodes(ctx, nil)
 	if err != nil {
 		t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
 	}
@@ -119,7 +228,7 @@ func TestCountUnenrichedEpisodes(t *testing.T) {
 	if err := store.MarkEpisodeEnriched(ctx, ep.ID, ""); err != nil {
 		t.Fatalf("MarkEpisodeEnriched failed: %v", err)
 	}
-	count, err = store.CountUnenrichedEpisodes(ctx)
+	count, err = store.CountUnenrichedEpisodes(ctx, nil)
 	if err != nil {
 		t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
 	}
@@ -158,7 +267,7 @@ func TestMarkEpisodeEnriched(t *testing.T) {
 		}
 
 		// stamped enriched despite error
-		count, _ := store.CountUnenrichedEpisodes(ctx)
+		count, _ := store.CountUnenrichedEpisodes(ctx, nil)
 		if count != 0 {
 			t.Errorf("Expected episode stamped enriched, %d still unenriched", count)
 		}

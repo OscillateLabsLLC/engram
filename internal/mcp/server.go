@@ -238,7 +238,7 @@ func (s *Server) registerTools() {
 	// add_knowledge tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "add_knowledge",
-		Description: "Store a knowledge fact as a subject-predicate-object triple. Triples link back to their source episode for provenance. Entities are automatically resolved — if a semantically matching entity already exists, it will be reused rather than duplicated.\n\nAllowed predicates: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via",
+		Description: "Store a knowledge fact as a subject-predicate-object triple. Triples link back to their source episode for provenance. Entities are automatically resolved — if a semantically matching entity already exists, it will be reused rather than duplicated. Prefer the most specific predicate available; use related_to only when no other predicate fits.\n\nAllowed predicates: " + strings.Join(models.SortedPredicates(), ", "),
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -249,7 +249,7 @@ func (s *Server) registerTools() {
 				"predicate": map[string]interface{}{
 					"type":        "string",
 					"description": "The relationship",
-					"enum":        []string{"owns", "works_at", "contributes_to", "uses", "prefers", "builds", "depends_on", "located_in", "related_to", "part_of", "instance_of", "created_by", "configured_with", "deployed_on", "communicates_via"},
+					"enum":        models.SortedPredicates(),
 				},
 				"object": map[string]interface{}{
 					"type":        "string",
@@ -768,7 +768,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 
 	// Validate predicate against controlled vocabulary
 	if !models.ValidPredicates[params.Predicate] {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid predicate %q: must be one of: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via", params.Predicate)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("invalid predicate %q: must be one of: %s", params.Predicate, strings.Join(models.SortedPredicates(), ", "))), nil
 	}
 
 	// Resolve subject entity (embed name, match or create)

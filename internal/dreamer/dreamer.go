@@ -41,8 +41,13 @@ const (
 	// maxConsecutiveLLMFailures aborts a crawl when the LLM endpoint appears
 	// down or rate-limited — every remaining episode would burn a failed call
 	maxConsecutiveLLMFailures = 5
-	// maxTriplesPerEpisode caps how many validated triples are stored per episode
-	maxTriplesPerEpisode = 10
+	// maxTriplesPerEpisode caps how many validated triples are stored per
+	// episode; when the model returns more, the top N by confidence are kept
+	maxTriplesPerEpisode = 20
+	// maxSharedEpisodeLinks caps how many episodes an entity may share before
+	// linking is skipped for it entirely — hub entities (mentioned by huge
+	// numbers of episodes) produce quadratic no-signal links
+	maxSharedEpisodeLinks = 25
 	// entityResolutionThreshold is passed to InsertEntity for entity dedup
 	entityResolutionThreshold = 0.88
 	// DefaultLLMTimeout bounds a single extraction call
@@ -53,18 +58,12 @@ const (
 
 // extractionSystemPrompt instructs the model; the deterministic validation
 // pipeline below enforces every rule it states.
-var extractionSystemPrompt = "You extract knowledge triples from text. Output only JSON matching the schema. Rules: subject and object MUST be entity names that appear in or are directly implied by the text. predicate MUST be one of: " + strings.Join(sortedPredicates(), ", ") + ". confidence is 0.0-1.0 reflecting how explicitly the text states the fact. Extract at most 10 triples. If no clear facts exist, return an empty list."
+var extractionSystemPrompt = "You extract knowledge triples from text. Output only JSON matching the schema. Rules: subject and object MUST be entity names that appear in or are directly implied by the text. predicate MUST be one of: " + strings.Join(models.SortedPredicates(), ", ") + ". confidence is 0.0-1.0 reflecting how explicitly the text states the fact. Extract at most 20 triples. If no clear facts exist, return an empty list. Prefer the most specific predicate available; use related_to only when no other predicate fits."
 
-// sortedPredicates renders models.ValidPredicates deterministically so the
-// prompt can never drift from the validation whitelist
-func sortedPredicates() []string {
-	preds := make([]string, 0, len(models.ValidPredicates))
-	for p := range models.ValidPredicates {
-		preds = append(preds, p)
-	}
-	sort.Strings(preds)
-	return preds
-}
+// builtinOwnerAliases are always treated as referring to the owner when any
+// explicit owner alias is configured — in a personal memory corpus,
+// first/second-person references resolve to the owner.
+var builtinOwnerAliases = []string{"I", "me", "my", "user", "the user"}
 
 // extractionSchema is the JSON schema for the extraction envelope
 const extractionSchema = `{"type":"object","properties":{"triples":{"type":"array","items":{"type":"object","properties":{"subject":{"type":"string"},"predicate":{"type":"string"},"object":{"type":"string"},"subject_type":{"type":"string"},"object_type":{"type":"string"},"confidence":{"type":"number"}},"required":["subject","predicate","object","confidence"]}}},"required":["triples"]}`
@@ -74,24 +73,49 @@ const probeSchema = `{"type":"object","properties":{"ok":{"type":"boolean"}},"re
 
 // Dreamer crawls unenriched episodes and extracts knowledge from them
 type Dreamer struct {
-	store      *db.Store
-	llm        LLM
-	embedder   Embedder
-	llmTimeout time.Duration
+	store        *db.Store
+	llm          LLM
+	embedder     Embedder
+	llmTimeout   time.Duration
+	ownerAliases []string
+	skipTags     []string
 }
 
 // New creates a Dreamer. llmTimeout bounds each extraction call; <= 0 uses
-// DefaultLLMTimeout.
-func New(store *db.Store, llm LLM, embedder Embedder, llmTimeout time.Duration) *Dreamer {
+// DefaultLLMTimeout. ownerAliases are names that always refer to the corpus
+// owner (grounded by definition); when any are configured, built-in
+// first/second-person aliases ("I", "me", "my", "user", "the user") are added
+// automatically. Episodes carrying any tag in skipTags are never crawled.
+func New(store *db.Store, llm LLM, embedder Embedder, llmTimeout time.Duration, ownerAliases, skipTags []string) *Dreamer {
 	if llmTimeout <= 0 {
 		llmTimeout = DefaultLLMTimeout
 	}
-	return &Dreamer{
-		store:      store,
-		llm:        llm,
-		embedder:   embedder,
-		llmTimeout: llmTimeout,
+
+	aliases := make([]string, 0, len(ownerAliases)+len(builtinOwnerAliases))
+	for _, a := range ownerAliases {
+		if a = strings.TrimSpace(a); a != "" {
+			aliases = append(aliases, a)
+		}
 	}
+	if len(aliases) > 0 {
+		aliases = append(aliases, builtinOwnerAliases...)
+	}
+
+	return &Dreamer{
+		store:        store,
+		llm:          llm,
+		embedder:     embedder,
+		llmTimeout:   llmTimeout,
+		ownerAliases: aliases,
+		skipTags:     skipTags,
+	}
+}
+
+// SkipTags returns the tags that exclude an episode from dreaming — exposed
+// so the admin endpoints can report the backlog with the same filter the
+// crawl uses.
+func (d *Dreamer) SkipTags() []string {
+	return d.skipTags
 }
 
 // Probe checks that the LLM is reachable with a trivial structured call
@@ -119,7 +143,7 @@ func (d *Dreamer) Process(ctx context.Context, onEpisode func(failed bool)) erro
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		episodes, err := d.store.ListUnenrichedEpisodes(ctx, batchSize)
+		episodes, err := d.store.ListUnenrichedEpisodes(ctx, batchSize, d.skipTags)
 		if err != nil {
 			return fmt.Errorf("listing unenriched episodes: %w", err)
 		}
@@ -176,7 +200,7 @@ func (d *Dreamer) ProcessEpisode(ctx context.Context, ep *models.Episode) error 
 		return fmt.Errorf("%w: %v", ErrLLMFailure, err)
 	}
 
-	triples, err := validateExtraction(raw, ep.Name+"\n"+ep.Content)
+	triples, err := d.validateExtraction(ctx, raw, ep)
 	if err != nil {
 		return d.failEnrichment(ctx, ep.ID, fmt.Errorf("extraction payload invalid: %w", err))
 	}
@@ -223,12 +247,19 @@ func (d *Dreamer) ProcessEpisode(ctx context.Context, ep *models.Episode) error 
 }
 
 // linkSharedEntityEpisodes creates same_entity links from episodeID to every
-// other episode whose knowledge references one of the given entities
+// other episode whose knowledge references one of the given entities. Hub
+// entities sharing more than maxSharedEpisodeLinks episodes are skipped —
+// linking everything to everything through a ubiquitous entity carries no
+// signal and grows quadratically.
 func (d *Dreamer) linkSharedEntityEpisodes(ctx context.Context, episodeID string, entityIDs map[string]bool) {
 	for entityID := range entityIDs {
 		shared, err := d.store.FindEpisodesSharingEntities(ctx, []string{entityID}, episodeID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: dreamer failed to find episodes sharing entity %s: %v\n", entityID, err)
+			continue
+		}
+		if len(shared) > maxSharedEpisodeLinks {
+			fmt.Fprintf(os.Stderr, "Warning: dreamer skipping same_entity links for a hub entity shared by %d episodes (cap %d)\n", len(shared), maxSharedEpisodeLinks)
 			continue
 		}
 		for _, other := range shared {
@@ -299,11 +330,13 @@ type extractedTriple struct {
 
 // validateExtraction parses the LLM payload and applies the deterministic
 // validation pipeline: predicate whitelist, non-empty subject/object,
-// confidence clamped to [0,1] (rejected when not a number), hallucination
-// check (subject or object must appear in the episode text), and a cap of
-// 10 triples. Rejections are logged, not errors; an error is returned only
-// when the envelope itself is unparseable.
-func validateExtraction(raw json.RawMessage, episodeText string) ([]extractedTriple, error) {
+// confidence clamped to [0,1] (rejected when not a number), and a grounding
+// check — both subject and object must be grounded (see isGrounded). When
+// more than maxTriplesPerEpisode triples survive, the top N by descending
+// confidence are kept (stable sort). Rejections are logged, not errors; an
+// error is returned only when the envelope itself is unparseable. Grounding
+// lookups happen before any entity insertions for the episode.
+func (d *Dreamer) validateExtraction(ctx context.Context, raw json.RawMessage, ep *models.Episode) ([]extractedTriple, error) {
 	var envelope struct {
 		Triples []json.RawMessage `json:"triples"`
 	}
@@ -311,7 +344,7 @@ func validateExtraction(raw json.RawMessage, episodeText string) ([]extractedTri
 		return nil, fmt.Errorf("failed to parse extraction envelope: %w", err)
 	}
 
-	haystack := strings.ToLower(episodeText)
+	haystack := strings.ToLower(ep.Name + "\n" + ep.Content)
 	var valid []extractedTriple
 	for _, item := range envelope.Triples {
 		var tr extractedTriple
@@ -333,17 +366,51 @@ func validateExtraction(raw json.RawMessage, episodeText string) ([]extractedTri
 		if tr.Confidence > 1 {
 			tr.Confidence = 1
 		}
-		if !strings.Contains(haystack, strings.ToLower(tr.Subject)) &&
-			!strings.Contains(haystack, strings.ToLower(tr.Object)) {
-			reject(item, "neither subject nor object appears in the episode text")
+		if !d.isGrounded(ctx, tr.Subject, haystack, ep.GroupID) {
+			reject(item, "subject is not grounded (not in episode text, not an owner alias, not a known entity)")
+			continue
+		}
+		if !d.isGrounded(ctx, tr.Object, haystack, ep.GroupID) {
+			reject(item, "object is not grounded (not in episode text, not an owner alias, not a known entity)")
 			continue
 		}
 		valid = append(valid, tr)
-		if len(valid) == maxTriplesPerEpisode {
-			break
-		}
+	}
+
+	if len(valid) > maxTriplesPerEpisode {
+		sort.SliceStable(valid, func(i, j int) bool {
+			return valid[i].Confidence > valid[j].Confidence
+		})
+		valid = valid[:maxTriplesPerEpisode]
 	}
 	return valid, nil
+}
+
+// isGrounded reports whether an entity name extracted by the LLM is anchored
+// to something real rather than hallucinated. A name is grounded when any of:
+//
+//	(a) it appears case-insensitively in the episode name+content,
+//	(b) it matches a configured owner alias — the owner is grounded by
+//	    definition in a personal memory corpus (the LLM resolves "I"/"me" to
+//	    the owner's canonical name, which rarely appears verbatim), or
+//	(c) it resolves to an already-existing entity in the episode's group.
+//
+// haystack must already be lowercased.
+func (d *Dreamer) isGrounded(ctx context.Context, name, haystack, groupID string) bool {
+	if strings.Contains(haystack, strings.ToLower(name)) {
+		return true
+	}
+	for _, alias := range d.ownerAliases {
+		if strings.EqualFold(alias, name) {
+			return true
+		}
+	}
+	entity, err := d.store.LookupEntity(ctx, name, groupID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: dreamer grounding lookup failed for %q: %v\n", name, err)
+		return false
+	}
+	return entity != nil
 }
 
 // reject logs a discarded triple with its reason

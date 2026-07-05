@@ -131,7 +131,7 @@ func TestHandleAddConversation(t *testing.T) {
 		}
 
 		// No triples created
-		count, err := store.CountUnenrichedEpisodes(ctx)
+		count, err := store.CountUnenrichedEpisodes(ctx, nil)
 		if err != nil {
 			t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
 		}

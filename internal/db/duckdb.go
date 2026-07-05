@@ -845,15 +845,73 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 		groupFilter = entity.GroupID
 	}
 
-	// Entity resolution uses two string-based strategies:
-	// 1. Case-insensitive exact match: "Mike" = "mike"
-	// 2. Normalized match (strip non-alphanumeric, lowercase): "OscillateLabs" = "Oscillate Labs"
-	//
-	// Embedding-based resolution is NOT used for entity names. nomic-embed-text
-	// produces degenerate embeddings for short texts — "Mike" vs "DuckDB" scores
-	// 0.9594, same as "Mike" vs "Oscillate Labs". The embedding space is unusable
-	// for distinguishing entity names. Embeddings are still stored on entities for
-	// future use with longer-context models.
+	existing, err := s.lookupEntityByName(ctx, entity.CanonicalName, groupFilter)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+
+	// No match found — insert new entity
+	if entity.ID == "" {
+		entity.ID = uuid.New().String()
+	}
+	if entity.CreatedAt.IsZero() {
+		entity.CreatedAt = time.Now()
+	}
+	entity.GroupID = groupFilter
+	entity.EntityType = normalizeEntityType(entity.EntityType)
+
+	var embeddingJSON interface{}
+	if len(entity.Embedding) > 0 {
+		data, _ := json.Marshal(entity.Embedding)
+		embeddingJSON = string(data)
+	}
+
+	var metadataJSON interface{}
+	if entity.Metadata != "" {
+		metadataJSON = entity.Metadata
+	}
+
+	var embeddingModel interface{}
+	if embeddingJSON != nil && entity.EmbeddingModel != "" {
+		embeddingModel = entity.EmbeddingModel
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO entities (id, canonical_name, entity_type, embedding, embedding_model, group_id, created_at, metadata)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, entity.ID, entity.CanonicalName, entity.EntityType, embeddingJSON, embeddingModel, entity.GroupID, entity.CreatedAt, metadataJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert entity: %w", err)
+	}
+
+	return entity, nil
+}
+
+// LookupEntity resolves name against existing entities in groupID using the
+// same two-pass matching as InsertEntity (case-insensitive exact, then
+// normalized), but never inserts. Returns (nil, nil) when no match exists.
+func (s *Store) LookupEntity(ctx context.Context, name, groupID string) (*models.Entity, error) {
+	groupFilter := "default"
+	if groupID != "" {
+		groupFilter = groupID
+	}
+	return s.lookupEntityByName(ctx, name, groupFilter)
+}
+
+// lookupEntityByName is the shared resolution logic behind InsertEntity and
+// LookupEntity: case-insensitive exact match, then normalized match (strip
+// non-alphanumeric chars and compare). groupFilter must already be resolved
+// (non-empty). Returns (nil, nil) when no match is found.
+//
+// Embedding-based resolution is NOT used for entity names. nomic-embed-text
+// produces degenerate embeddings for short texts — "Mike" vs "DuckDB" scores
+// 0.9594, same as "Mike" vs "Oscillate Labs". The embedding space is unusable
+// for distinguishing entity names. Embeddings are still stored on entities for
+// future use with longer-context models.
+func (s *Store) lookupEntityByName(ctx context.Context, name, groupFilter string) (*models.Entity, error) {
 	var existingID, existingName, existingType string
 	var existingCreatedAt time.Time
 
@@ -864,7 +922,7 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 		WHERE LOWER(canonical_name) = LOWER(?)
 		  AND group_id = ?
 		LIMIT 1
-	`, entity.CanonicalName, groupFilter).Scan(&existingID, &existingName, &existingType, &existingCreatedAt)
+	`, name, groupFilter).Scan(&existingID, &existingName, &existingType, &existingCreatedAt)
 
 	if err == nil {
 		return &models.Entity{
@@ -881,7 +939,7 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 
 	// Second pass: normalized match — strip non-alphanumeric chars and compare.
 	// Catches "OscillateLabs" vs "Oscillate Labs" vs "Oscillate Labs LLC"
-	normalizedName := normalizeEntityName(entity.CanonicalName)
+	normalizedName := normalizeEntityName(name)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, canonical_name, entity_type, created_at
 		FROM entities
@@ -909,42 +967,17 @@ func (s *Store) InsertEntity(ctx context.Context, entity *models.Entity, similar
 		}
 	}
 
-	// No match found — insert new entity
-	if entity.ID == "" {
-		entity.ID = uuid.New().String()
-	}
-	if entity.CreatedAt.IsZero() {
-		entity.CreatedAt = time.Now()
-	}
-	if entity.GroupID == "" {
-		entity.GroupID = "default"
-	}
+	return nil, nil
+}
 
-	var embeddingJSON interface{}
-	if len(entity.Embedding) > 0 {
-		data, _ := json.Marshal(entity.Embedding)
-		embeddingJSON = string(data)
+// normalizeEntityType lowercases and trims an entity type, and collapses the
+// literal (non-informative) value "entity" to empty.
+func normalizeEntityType(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	if t == "entity" {
+		return ""
 	}
-
-	var metadataJSON interface{}
-	if entity.Metadata != "" {
-		metadataJSON = entity.Metadata
-	}
-
-	var embeddingModel interface{}
-	if embeddingJSON != nil && entity.EmbeddingModel != "" {
-		embeddingModel = entity.EmbeddingModel
-	}
-
-	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO entities (id, canonical_name, entity_type, embedding, embedding_model, group_id, created_at, metadata)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, entity.ID, entity.CanonicalName, entity.EntityType, embeddingJSON, embeddingModel, entity.GroupID, entity.CreatedAt, metadataJSON)
-	if err != nil {
-		return nil, fmt.Errorf("failed to insert entity: %w", err)
-	}
-
-	return entity, nil
+	return t
 }
 
 // GetEntity retrieves a single entity by ID
@@ -974,8 +1007,16 @@ func (s *Store) GetEntity(ctx context.Context, id string) (*models.Entity, error
 	return &entity, nil
 }
 
-// InsertKnowledgeTriple adds a knowledge triple to the store
+// InsertKnowledgeTriple adds a knowledge triple to the store. Self-loops
+// (subject == object) and exact duplicates (same subject, predicate, object,
+// and group) are silently skipped — neither is an error, since the dreamer
+// treats rejected/duplicate triples as routine, not exceptional.
 func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.KnowledgeTriple) error {
+	if triple.SubjectEntityID == triple.ObjectEntityID {
+		fmt.Fprintf(os.Stderr, "Debug: skipping self-loop triple (entity %s, predicate %s)\n", triple.SubjectEntityID, triple.Predicate)
+		return nil
+	}
+
 	if triple.ID == "" {
 		triple.ID = uuid.New().String()
 	}
@@ -987,6 +1028,24 @@ func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.Knowle
 	}
 	if triple.Confidence == 0 {
 		triple.Confidence = 1.0
+	}
+
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM knowledge
+			WHERE subject_entity_id = ?
+			  AND predicate = ?
+			  AND object_entity_id = ?
+			  AND group_id = ?
+		)
+	`, triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID, triple.GroupID).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("failed to check for duplicate knowledge triple: %w", err)
+	}
+	if exists {
+		fmt.Fprintf(os.Stderr, "Debug: skipping duplicate triple (%s %s %s)\n", triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID)
+		return nil
 	}
 
 	var embeddingJSON interface{}
@@ -1005,7 +1064,7 @@ func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.Knowle
 		embeddingModel = triple.EmbeddingModel
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO knowledge (
 			id, subject_entity_id, predicate, object_entity_id,
 			source_episode_id, source, group_id, embedding, embedding_model,

@@ -119,6 +119,13 @@ func runServe(args []string) {
 		dreamInterval = d
 	}
 
+	// Names that always refer to the corpus owner — grounds triples whose
+	// subject is the owner's canonical name when the episode says "I"/"me"
+	ownerAliases := splitCommaList(os.Getenv("ENGRAM_OWNER_ALIASES"))
+
+	// Episodes carrying any of these tags are never crawled by the dreamer
+	dreamSkipTags := splitCommaList(os.Getenv("ENGRAM_DREAM_SKIP_TAGS"))
+
 	var llmClient dreamer.LLM
 	switch llmAdapter {
 	case "openai":
@@ -135,7 +142,7 @@ func runServe(args []string) {
 	}
 
 	embedder := embedding.NewClient(embeddingURL, embeddingModel, embeddingAPIKey)
-	dreamWorker := dreamer.New(store, llmClient, embedder, llmTimeout)
+	dreamWorker := dreamer.New(store, llmClient, embedder, llmTimeout, ownerAliases, dreamSkipTags)
 
 	fmt.Fprintf(os.Stderr, "===================================\n")
 	fmt.Fprintf(os.Stderr, "Engram memory system starting...\n")
@@ -148,6 +155,9 @@ func runServe(args []string) {
 		fmt.Fprintf(os.Stderr, "Dream interval: %s\n", dreamInterval)
 	} else {
 		fmt.Fprintf(os.Stderr, "Dream interval: disabled (trigger via POST /api/v1/admin/dream)\n")
+	}
+	if len(dreamSkipTags) > 0 {
+		fmt.Fprintf(os.Stderr, "Dream skip tags: %s\n", strings.Join(dreamSkipTags, ", "))
 	}
 	fmt.Fprintf(os.Stderr, "Port: %s\n", resolvedPort)
 	fmt.Fprintf(os.Stderr, "===================================\n")
@@ -212,6 +222,18 @@ func runServe(args []string) {
 	// Serve returns nil only after Shutdown() was initiated by the signal
 	// handler above — wait for it to finish closing the store.
 	<-shutdownDone
+}
+
+// splitCommaList parses a comma-separated env value into trimmed, non-empty
+// items; an empty value yields nil.
+func splitCommaList(v string) []string {
+	var items []string
+	for _, item := range strings.Split(v, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func runStdio() {

@@ -102,7 +102,7 @@ func TestProcessEpisode(t *testing.T) {
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Mike","predicate":"uses","object":"DuckDB","subject_type":"person","object_type":"tool","confidence":0.9}`,
 		)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{Content: "Mike uses DuckDB for Engram storage", Name: "storage note", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
@@ -131,7 +131,7 @@ func TestProcessEpisode(t *testing.T) {
 		}
 
 		// Episode is stamped enriched
-		count, err := store.CountUnenrichedEpisodes(context.Background())
+		count, err := store.CountUnenrichedEpisodes(context.Background(), nil)
 		if err != nil {
 			t.Fatalf("CountUnenrichedEpisodes failed: %v", err)
 		}
@@ -159,7 +159,7 @@ func TestProcessEpisode(t *testing.T) {
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":3.5}`,
 		)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{Content: "Mike uses DuckDB", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
@@ -184,7 +184,7 @@ func TestProcessEpisode(t *testing.T) {
 			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":"high"}`,     // non-numeric confidence
 			`{"subject":"Mike","predicate":"prefers","object":"DuckDB","confidence":0.7}`,     // valid
 		)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{Content: "Mike prefers DuckDB", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
@@ -199,33 +199,134 @@ func TestProcessEpisode(t *testing.T) {
 		}
 	})
 
-	t.Run("keeps triples where either subject or object appears in text", func(t *testing.T) {
+	t.Run("rejects triple when one side is ungrounded", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Oscillate Labs","predicate":"owns","object":"Engram","confidence":0.8}`,
 		)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
-		// Only "Engram" appears in the text; subject is implied
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
+		// "Engram" appears in the text, but "Oscillate Labs" is not in the
+		// text, not an owner alias, and not a known entity — an incidental
+		// substring match on one side must not launder the other side
+		ep := insertEpisode(t, store, &models.Episode{Content: "engram is the memory project", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		if got := len(searchTriples(t, store)); got != 0 {
+			t.Errorf("Expected 0 triples (subject ungrounded), got %d", got)
+		}
+	})
+
+	t.Run("grounds subject via owner alias", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"Mike Gray","predicate":"prefers","object":"DuckDB","confidence":0.9}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, []string{"Mike Gray", "Mike"}, nil)
+		// The episode speaks in first person; the model resolved "I" to the
+		// owner's canonical name, which never appears in the text
+		ep := insertEpisode(t, store, &models.Episode{Content: "I prefer DuckDB for storage", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		triples := searchTriples(t, store)
+		if len(triples) != 1 {
+			t.Fatalf("Expected 1 triple (subject grounded via owner alias), got %d", len(triples))
+		}
+		if triples[0].SubjectName != "Mike Gray" {
+			t.Errorf("Expected subject 'Mike Gray', got %q", triples[0].SubjectName)
+		}
+	})
+
+	t.Run("built-in first-person aliases are grounded when owner aliases configured", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"the user","predicate":"uses","object":"DuckDB","confidence":0.9}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, []string{"Mike"}, nil)
+		ep := insertEpisode(t, store, &models.Episode{Content: "Storage runs on DuckDB", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		if got := len(searchTriples(t, store)); got != 1 {
+			t.Errorf("Expected 1 triple (built-in alias grounded), got %d", got)
+		}
+	})
+
+	t.Run("owner aliases are inert when none are configured", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"the user","predicate":"uses","object":"DuckDB","confidence":0.9}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
+		ep := insertEpisode(t, store, &models.Episode{Content: "Storage runs on DuckDB", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		if got := len(searchTriples(t, store)); got != 0 {
+			t.Errorf("Expected 0 triples (no owner aliases configured), got %d", got)
+		}
+	})
+
+	t.Run("grounds name via already-existing entity", func(t *testing.T) {
+		store := setupTestStore(t)
+		if _, err := store.InsertEntity(context.Background(), &models.Entity{
+			CanonicalName: "Oscillate Labs", EntityType: "organization",
+		}, 0.88); err != nil {
+			t.Fatalf("InsertEntity failed: %v", err)
+		}
+
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"Oscillate Labs","predicate":"owns","object":"Engram","confidence":0.8}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{Content: "engram is the memory project", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
 		}
 		if got := len(searchTriples(t, store)); got != 1 {
-			t.Errorf("Expected 1 triple (object matched case-insensitively), got %d", got)
+			t.Errorf("Expected 1 triple (subject grounded via existing entity), got %d", got)
 		}
 	})
 
-	t.Run("caps triples at 10 per episode", func(t *testing.T) {
+	t.Run("existing entity in another group does not ground", func(t *testing.T) {
+		store := setupTestStore(t)
+		if _, err := store.InsertEntity(context.Background(), &models.Entity{
+			CanonicalName: "Oscillate Labs", GroupID: "other-group",
+		}, 0.88); err != nil {
+			t.Fatalf("InsertEntity failed: %v", err)
+		}
+
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"Oscillate Labs","predicate":"owns","object":"Engram","confidence":0.8}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
+		ep := insertEpisode(t, store, &models.Episode{Content: "engram is the memory project", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		if got := len(searchTriples(t, store)); got != 0 {
+			t.Errorf("Expected 0 triples (entity exists only in another group), got %d", got)
+		}
+	})
+
+	t.Run("caps triples at 20 per episode keeping highest confidence", func(t *testing.T) {
 		store := setupTestStore(t)
 		var many []string
-		for i := 0; i < 15; i++ {
-			many = append(many, fmt.Sprintf(`{"subject":"Mike","predicate":"uses","object":"tool%d","confidence":0.9}`, i))
+		for i := 0; i < 25; i++ {
+			// tool0 has the lowest confidence, tool24 the highest
+			many = append(many, fmt.Sprintf(`{"subject":"Mike","predicate":"uses","object":"tool%d","confidence":0.%02d}`, i, i+10))
 		}
 		llm := &fakeLLM{response: triplesJSON(many...)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		content := "Mike uses"
-		for i := 0; i < 15; i++ {
+		for i := 0; i < 25; i++ {
 			content += fmt.Sprintf(" tool%d", i)
 		}
 		ep := insertEpisode(t, store, &models.Episode{Content: content, Source: "test"})
@@ -233,15 +334,30 @@ func TestProcessEpisode(t *testing.T) {
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
 		}
-		if got := len(searchTriples(t, store)); got != 10 {
-			t.Errorf("Expected 10 triples (capped), got %d", got)
+		triples := searchTriples(t, store)
+		if len(triples) != 20 {
+			t.Fatalf("Expected 20 triples (capped), got %d", len(triples))
+		}
+		kept := map[string]bool{}
+		for _, tr := range triples {
+			kept[tr.ObjectName] = true
+		}
+		for i := 0; i < 5; i++ {
+			if kept[fmt.Sprintf("tool%d", i)] {
+				t.Errorf("tool%d has one of the 5 lowest confidences and should have been dropped", i)
+			}
+		}
+		for i := 5; i < 25; i++ {
+			if !kept[fmt.Sprintf("tool%d", i)] {
+				t.Errorf("tool%d is in the top 20 by confidence and should have been kept", i)
+			}
 		}
 	})
 
 	t.Run("leaves episode unenriched on LLM failure", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{err: errors.New("connection refused")}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{
 			Content: "transient", Source: "test", Metadata: `{"kept":"yes"}`,
 		})
@@ -251,7 +367,7 @@ func TestProcessEpisode(t *testing.T) {
 			t.Fatalf("Expected ErrLLMFailure, got %v", err)
 		}
 
-		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		count, _ := store.CountUnenrichedEpisodes(context.Background(), nil)
 		if count != 1 {
 			t.Error("LLM-call failure must leave the episode queued for a later run")
 		}
@@ -267,7 +383,7 @@ func TestProcessEpisode(t *testing.T) {
 	t.Run("stamps enriched with error on unparseable payload", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: json.RawMessage(`"not an object"`)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{
 			Content: "whatever", Source: "test", Metadata: `{"kept":"yes"}`,
 		})
@@ -279,7 +395,7 @@ func TestProcessEpisode(t *testing.T) {
 		if errors.Is(err, ErrLLMFailure) {
 			t.Error("Parse failure must not be classified as an LLM-call failure")
 		}
-		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		count, _ := store.CountUnenrichedEpisodes(context.Background(), nil)
 		if count != 0 {
 			t.Error("Unparseable episode must still be stamped enriched (poison pill protection)")
 		}
@@ -305,7 +421,7 @@ func TestProcessEpisode(t *testing.T) {
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":0.9}`,
 		)}
-		d := New(store, llm, &fakeEmbedder{err: errors.New("embedder down")}, time.Second)
+		d := New(store, llm, &fakeEmbedder{err: errors.New("embedder down")}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{Content: "Mike uses DuckDB", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
@@ -330,7 +446,7 @@ func TestProcessEpisode(t *testing.T) {
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":0.9}`,
 		)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 
 		ep1 := insertEpisode(t, store, &models.Episode{Content: "Mike uses DuckDB", Source: "test"})
 		ep2 := insertEpisode(t, store, &models.Episode{Content: "Mike uses DuckDB again", Source: "test"})
@@ -361,16 +477,63 @@ func TestProcessEpisode(t *testing.T) {
 		}
 	})
 
+	t.Run("skips linking for hub entities shared by too many episodes", func(t *testing.T) {
+		store := setupTestStore(t)
+		ctx := context.Background()
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":0.9}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
+
+		// Pre-populate a hub: maxSharedEpisodeLinks+1 episodes whose knowledge
+		// references the same entity
+		hub, err := store.InsertEntity(ctx, &models.Entity{CanonicalName: "Mike"}, 0.88)
+		if err != nil {
+			t.Fatalf("InsertEntity failed: %v", err)
+		}
+		for i := 0; i < maxSharedEpisodeLinks+1; i++ {
+			other, err := store.InsertEntity(ctx, &models.Entity{CanonicalName: fmt.Sprintf("thing%d", i)}, 0.88)
+			if err != nil {
+				t.Fatalf("InsertEntity failed: %v", err)
+			}
+			sharer := insertEpisode(t, store, &models.Episode{Content: fmt.Sprintf("Mike uses thing%d", i), Source: "test"})
+			if err := store.MarkEpisodeEnriched(ctx, sharer.ID, ""); err != nil {
+				t.Fatalf("MarkEpisodeEnriched failed: %v", err)
+			}
+			if err := store.InsertKnowledgeTriple(ctx, &models.KnowledgeTriple{
+				SubjectEntityID: hub.ID, Predicate: "uses", ObjectEntityID: other.ID,
+				SourceEpisodeID: sharer.ID, Source: "test",
+			}); err != nil {
+				t.Fatalf("InsertKnowledgeTriple failed: %v", err)
+			}
+		}
+
+		ep := insertEpisode(t, store, &models.Episode{Content: "Mike uses DuckDB", Source: "test"})
+		if err := d.ProcessEpisode(ctx, ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+
+		links, err := store.GetEpisodeLinks(ctx, ep.ID)
+		if err != nil {
+			t.Fatalf("GetEpisodeLinks failed: %v", err)
+		}
+		for _, l := range links {
+			if l.ViaEntityID == hub.ID {
+				t.Fatalf("Hub entity shared by %d episodes must not produce links, got %d links", maxSharedEpisodeLinks+1, len(links))
+			}
+		}
+	})
+
 	t.Run("empty triples list still enriches", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: json.RawMessage(`{"triples":[]}`)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		insertEpisode(t, store, &models.Episode{Content: "nothing factual here", Source: "test"})
 
 		if err := d.Process(context.Background(), nil); err != nil {
 			t.Fatalf("Process failed: %v", err)
 		}
-		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		count, _ := store.CountUnenrichedEpisodes(context.Background(), nil)
 		if count != 0 {
 			t.Errorf("Expected all episodes enriched, %d remain", count)
 		}
@@ -381,7 +544,7 @@ func TestProcess(t *testing.T) {
 	t.Run("processes all unenriched episodes and reports progress", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: json.RawMessage(`{"triples":[]}`)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 
 		for i := 0; i < 3; i++ {
 			insertEpisode(t, store, &models.Episode{Content: fmt.Sprintf("episode %d", i), Source: "test"})
@@ -415,10 +578,45 @@ func TestProcess(t *testing.T) {
 		llm.mu.Unlock()
 	})
 
+	t.Run("skip-tagged episodes are never crawled nor stamped", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: json.RawMessage(`{"triples":[]}`)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, []string{"private"})
+
+		skipped := insertEpisode(t, store, &models.Episode{
+			Content: "do not dream this", Source: "test", Tags: []string{"private", "journal"},
+		})
+		insertEpisode(t, store, &models.Episode{
+			Content: "dream this", Source: "test", Tags: []string{"journal"},
+		})
+
+		var done int
+		if err := d.Process(context.Background(), func(bool) { done++ }); err != nil {
+			t.Fatalf("Process failed: %v", err)
+		}
+		if done != 1 {
+			t.Errorf("Expected 1 episode processed (tagged one skipped), got %d", done)
+		}
+
+		// The skipped episode stays unenriched — removing the tag later makes
+		// it eligible naturally
+		count, _ := store.CountUnenrichedEpisodes(context.Background(), nil)
+		if count != 1 {
+			t.Errorf("Expected the skip-tagged episode to remain unenriched, got %d unenriched", count)
+		}
+		got, err := store.GetEpisode(context.Background(), skipped.ID)
+		if err != nil {
+			t.Fatalf("GetEpisode failed: %v", err)
+		}
+		if got.Metadata != "" {
+			t.Errorf("Skip-tagged episode must be untouched, got metadata %q", got.Metadata)
+		}
+	})
+
 	t.Run("counts failures below the breaker threshold and keeps going", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{err: errors.New("llm down")}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 
 		insertEpisode(t, store, &models.Episode{Content: "one", Source: "test"})
 		insertEpisode(t, store, &models.Episode{Content: "two", Source: "test"})
@@ -436,7 +634,7 @@ func TestProcess(t *testing.T) {
 		if done != 2 || failed != 2 {
 			t.Errorf("Expected 2 done / 2 failed, got %d/%d", done, failed)
 		}
-		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		count, _ := store.CountUnenrichedEpisodes(context.Background(), nil)
 		if count != 2 {
 			t.Errorf("LLM-failed episodes must stay queued for retry, got %d remaining", count)
 		}
@@ -445,7 +643,7 @@ func TestProcess(t *testing.T) {
 	t.Run("aborts after consecutive LLM failures", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{err: errors.New("llm down")}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 
 		for i := 0; i < maxConsecutiveLLMFailures+3; i++ {
 			insertEpisode(t, store, &models.Episode{Content: fmt.Sprintf("ep %d", i), Source: "test"})
@@ -462,7 +660,7 @@ func TestProcess(t *testing.T) {
 		if done != maxConsecutiveLLMFailures {
 			t.Errorf("Expected exactly %d attempts before abort, got %d", maxConsecutiveLLMFailures, done)
 		}
-		count, _ := store.CountUnenrichedEpisodes(context.Background())
+		count, _ := store.CountUnenrichedEpisodes(context.Background(), nil)
 		if count != maxConsecutiveLLMFailures+3 {
 			t.Errorf("All episodes must remain queued after abort, got %d", count)
 		}
@@ -471,7 +669,7 @@ func TestProcess(t *testing.T) {
 	t.Run("stops on context cancellation", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: json.RawMessage(`{"triples":[]}`)}
-		d := New(store, llm, &fakeEmbedder{}, time.Second)
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		insertEpisode(t, store, &models.Episode{Content: "one", Source: "test"})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -484,14 +682,14 @@ func TestProcess(t *testing.T) {
 
 func TestProbe(t *testing.T) {
 	t.Run("succeeds when LLM answers", func(t *testing.T) {
-		d := New(setupTestStore(t), &fakeLLM{response: json.RawMessage(`{"ok":true}`)}, &fakeEmbedder{}, time.Second)
+		d := New(setupTestStore(t), &fakeLLM{response: json.RawMessage(`{"ok":true}`)}, &fakeEmbedder{}, time.Second, nil, nil)
 		if err := d.Probe(context.Background()); err != nil {
 			t.Errorf("Probe failed: %v", err)
 		}
 	})
 
 	t.Run("propagates LLM errors", func(t *testing.T) {
-		d := New(setupTestStore(t), &fakeLLM{err: errors.New("unreachable")}, &fakeEmbedder{}, time.Second)
+		d := New(setupTestStore(t), &fakeLLM{err: errors.New("unreachable")}, &fakeEmbedder{}, time.Second, nil, nil)
 		if err := d.Probe(context.Background()); err == nil {
 			t.Error("Expected probe error")
 		}

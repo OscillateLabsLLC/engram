@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // Episode represents a memory episode in the system
 type Episode struct {
@@ -86,6 +89,19 @@ var ValidPredicates = map[string]bool{
 	"prefers": true, "builds": true, "depends_on": true, "located_in": true,
 	"related_to": true, "part_of": true, "instance_of": true, "created_by": true,
 	"configured_with": true, "deployed_on": true, "communicates_via": true,
+	"caused_by": true, "alternative_to": true, "client_of": true,
+	"family_of": true, "used_for": true,
+}
+
+// SortedPredicates renders ValidPredicates deterministically so prompts, tool
+// schemas, and error messages can never drift from the validation whitelist.
+func SortedPredicates() []string {
+	preds := make([]string, 0, len(ValidPredicates))
+	for p := range ValidPredicates {
+		preds = append(preds, p)
+	}
+	sort.Strings(preds)
+	return preds
 }
 
 // EpisodeLink represents a directional link between two episodes

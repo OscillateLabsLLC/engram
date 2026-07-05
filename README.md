@@ -104,6 +104,8 @@ Configure via environment variables:
 | `ENGRAM_LLM_TIMEOUT` | Per-episode extraction timeout (Go duration)           | `60s`                    |
 | `ENGRAM_CLAUDE_BIN` | Claude CLI binary (`claude-cli` adapter)                | `claude`                 |
 | `ENGRAM_DREAM_INTERVAL` | Automatic dreaming interval (Go duration); unset disables it | _(disabled)_      |
+| `ENGRAM_OWNER_ALIASES` | Comma-separated names for the memory owner (e.g. `Mike,Mike Gray`); grounds owner facts and enables built-in aliases (`I`, `me`, `my`, `user`, `the user`) | _(none)_ |
+| `ENGRAM_DREAM_SKIP_TAGS` | Comma-separated tags; episodes carrying any of them are never dreamed (nor stamped) | _(none)_ |
 
 `EMBEDDING_URL` accepts a bare host (`http://localhost:11434`), a `/v1` base (`http://localhost:1234/v1`), or a full `/v1/embeddings` endpoint — Engram normalizes it. `OLLAMA_URL` is still honored as a deprecated alias for `EMBEDDING_URL`.
 
@@ -140,7 +142,7 @@ The job runs asynchronously inside the server, only touches derived data (episod
 
 ## Dreamer (knowledge extraction)
 
-The dreamer reads stored episodes and extracts entities and relationships into the knowledge graph — subject-predicate-object triples like `Mike uses DuckDB`, plus links between episodes that mention the same entities. It runs entirely outside the write path: episodes are stored instantly, and enrichment happens later, in the background, one episode at a time. Extracted triples pass a deterministic validation pipeline (predicate whitelist, confidence bounds, a check that the entities actually appear in the episode text) before anything is written.
+The dreamer reads stored episodes and extracts entities and relationships into the knowledge graph — subject-predicate-object triples like `Mike uses DuckDB`, plus links between episodes that mention the same entities. It runs entirely outside the write path: episodes are stored instantly, and enrichment happens later, in the background, one episode at a time. Extracted triples pass a deterministic validation pipeline (predicate whitelist, confidence bounds, and a grounding check — both entities must appear in the episode text, match a configured owner alias, or resolve to an already-known entity) before anything is written. Set `ENGRAM_OWNER_ALIASES` so facts about you survive validation when episodes say "I" or "me", and `ENGRAM_DREAM_SKIP_TAGS` to keep tagged episodes (e.g. `private`) out of the dreamer entirely.
 
 Dreaming is **disabled by default**. Trigger a pass manually:
 
