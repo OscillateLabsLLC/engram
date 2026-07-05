@@ -366,12 +366,12 @@ func (d *Dreamer) validateExtraction(ctx context.Context, raw json.RawMessage, e
 		if tr.Confidence > 1 {
 			tr.Confidence = 1
 		}
-		if !d.isGrounded(ctx, tr.Subject, haystack, ep.GroupID) {
-			reject(item, "subject is not grounded (not in episode text, not an owner alias, not a known entity)")
-			continue
-		}
-		if !d.isGrounded(ctx, tr.Object, haystack, ep.GroupID) {
-			reject(item, "object is not grounded (not in episode text, not an owner alias, not a known entity)")
+		// Require at least ONE side grounded. Backfill evidence: every
+		// confirmed hallucination had BOTH sides ungrounded, while requiring
+		// both sides rejected faithful abstractions (an object phrased as a
+		// concept rather than verbatim text) at ~8x the old false-kill rate.
+		if !d.isGrounded(ctx, tr.Subject, haystack, ep.GroupID) && !d.isGrounded(ctx, tr.Object, haystack, ep.GroupID) {
+			reject(item, "neither subject nor object is grounded (not in episode text, not an owner alias, not a known entity)")
 			continue
 		}
 		valid = append(valid, tr)

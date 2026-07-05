@@ -199,22 +199,40 @@ func TestProcessEpisode(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects triple when one side is ungrounded", func(t *testing.T) {
+	t.Run("accepts triple when one side is grounded", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Oscillate Labs","predicate":"owns","object":"Engram","confidence":0.8}`,
 		)}
 		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
-		// "Engram" appears in the text, but "Oscillate Labs" is not in the
-		// text, not an owner alias, and not a known entity — an incidental
-		// substring match on one side must not launder the other side
+		// "Engram" appears in the text; "Oscillate Labs" is a faithful
+		// abstraction not present verbatim. One grounded side is enough —
+		// requiring both rejected valid abstracted facts at ~8x the old rate
+		// in backfill testing, while every confirmed hallucination failed
+		// BOTH sides.
+		ep := insertEpisode(t, store, &models.Episode{Content: "engram is the memory project", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		if got := len(searchTriples(t, store)); got != 1 {
+			t.Errorf("Expected 1 triple (one side grounded suffices), got %d", got)
+		}
+	})
+
+	t.Run("rejects triple when both sides are ungrounded", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"Atlantis","predicate":"owns","object":"Excalibur","confidence":0.8}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		ep := insertEpisode(t, store, &models.Episode{Content: "engram is the memory project", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
 		}
 		if got := len(searchTriples(t, store)); got != 0 {
-			t.Errorf("Expected 0 triples (subject ungrounded), got %d", got)
+			t.Errorf("Expected 0 triples (fully ungrounded hallucination), got %d", got)
 		}
 	})
 
@@ -259,10 +277,12 @@ func TestProcessEpisode(t *testing.T) {
 	t.Run("owner aliases are inert when none are configured", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: triplesJSON(
-			`{"subject":"the user","predicate":"uses","object":"DuckDB","confidence":0.9}`,
+			`{"subject":"the user","predicate":"uses","object":"PostgreSQL","confidence":0.9}`,
 		)}
 		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
-		ep := insertEpisode(t, store, &models.Episode{Content: "Storage runs on DuckDB", Source: "test"})
+		// Neither side is in the text; "the user" must NOT ground via the
+		// built-in aliases when no owner aliases are configured
+		ep := insertEpisode(t, store, &models.Episode{Content: "Storage notes from today", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
@@ -303,10 +323,12 @@ func TestProcessEpisode(t *testing.T) {
 		}
 
 		llm := &fakeLLM{response: triplesJSON(
-			`{"subject":"Oscillate Labs","predicate":"owns","object":"Engram","confidence":0.8}`,
+			`{"subject":"Oscillate Labs","predicate":"owns","object":"Widgets","confidence":0.8}`,
 		)}
 		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
-		ep := insertEpisode(t, store, &models.Episode{Content: "engram is the memory project", Source: "test"})
+		// Neither side is in the text; the subject exists as an entity only
+		// in another group, which must not ground it here
+		ep := insertEpisode(t, store, &models.Episode{Content: "planning notes for the quarter", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
