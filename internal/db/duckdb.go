@@ -42,12 +42,20 @@ func NewStore(dbPath string) (*Store, error) {
 // initialize sets up the database schema and extensions
 func (s *Store) initialize() error {
 	// Install and load VSS extension as separate calls so the download
-	// completes before LOAD attempts to use the file.
+	// completes before LOAD attempts to use the file. Like FTS below, LOAD
+	// can race the INSTALL download flush (and concurrent test processes
+	// share the extensions dir), so retry once after a brief pause.
 	if _, err := s.db.Exec("INSTALL vss"); err != nil {
 		return fmt.Errorf("failed to install VSS extension: %w", err)
 	}
 	if _, err := s.db.Exec("LOAD vss"); err != nil {
-		return fmt.Errorf("failed to load VSS extension: %w", err)
+		time.Sleep(100 * time.Millisecond)
+		if _, err := s.db.Exec("INSTALL vss"); err != nil {
+			return fmt.Errorf("failed to install VSS extension on retry: %w", err)
+		}
+		if _, err := s.db.Exec("LOAD vss"); err != nil {
+			return fmt.Errorf("failed to load VSS extension: %w", err)
+		}
 	}
 
 	schema := `
