@@ -112,6 +112,10 @@ func runServe(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// The process must not exit before store.Close() completes — DuckDB
+	// checkpoints its WAL on close, and an unflushed WAL containing the
+	// startup migration DDL can fail to replay on the next boot.
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		fmt.Fprintf(os.Stderr, "\nShutting down...\n")
@@ -119,11 +123,15 @@ func runServe(args []string) {
 			fmt.Fprintf(os.Stderr, "Shutdown error: %v\n", err)
 		}
 		store.Close()
+		close(shutdownDone)
 	}()
 
 	if err := apiServer.Serve(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
+	// Serve returns nil only after Shutdown() was initiated by the signal
+	// handler above — wait for it to finish closing the store.
+	<-shutdownDone
 }
 
 func runStdio() {
