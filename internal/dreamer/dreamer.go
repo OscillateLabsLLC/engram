@@ -13,6 +13,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oscillatelabsllc/engram/internal/db"
@@ -79,6 +80,11 @@ type Dreamer struct {
 	llmTimeout   time.Duration
 	ownerAliases []string
 	skipTags     []string
+
+	// hubWarned tracks hub entities already logged this process, so a
+	// heavily-referenced entity does not emit a warning for every episode
+	hubWarned   map[string]bool
+	hubWarnedMu sync.Mutex
 }
 
 // New creates a Dreamer. llmTimeout bounds each extraction call; <= 0 uses
@@ -259,7 +265,18 @@ func (d *Dreamer) linkSharedEntityEpisodes(ctx context.Context, episodeID string
 			continue
 		}
 		if len(shared) > maxSharedEpisodeLinks {
-			fmt.Fprintf(os.Stderr, "Warning: dreamer skipping same_entity links for a hub entity shared by %d episodes (cap %d)\n", len(shared), maxSharedEpisodeLinks)
+			d.hubWarnedMu.Lock()
+			seen := d.hubWarned[entityID]
+			if !seen {
+				if d.hubWarned == nil {
+					d.hubWarned = map[string]bool{}
+				}
+				d.hubWarned[entityID] = true
+			}
+			d.hubWarnedMu.Unlock()
+			if !seen {
+				fmt.Fprintf(os.Stderr, "Warning: dreamer skipping same_entity links for a hub entity shared by %d episodes (cap %d; further warnings for this entity suppressed)\n", len(shared), maxSharedEpisodeLinks)
+			}
 			continue
 		}
 		for _, other := range shared {
