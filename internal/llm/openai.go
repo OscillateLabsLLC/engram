@@ -66,15 +66,25 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-// chatRequest matches OpenAI-compatible API format
+// chatRequest matches OpenAI-compatible API format. ResponseFormat is a
+// pointer so the plain-text retry can omit it entirely.
 type chatRequest struct {
-	Model          string         `json:"model"`
-	Messages       []chatMessage  `json:"messages"`
-	ResponseFormat responseFormat `json:"response_format"`
+	Model          string          `json:"model"`
+	Messages       []chatMessage   `json:"messages"`
+	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
+// responseFormat uses the structured-outputs shape ("json_schema") when a
+// schema is available — required by LM Studio, supported by OpenAI, Ollama,
+// and vLLM — and falls back to "json_object" otherwise.
 type responseFormat struct {
-	Type string `json:"type"`
+	Type       string          `json:"type"`
+	JSONSchema *jsonSchemaSpec `json:"json_schema,omitempty"`
+}
+
+type jsonSchemaSpec struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 // chatResponse matches OpenAI-compatible API format
@@ -87,31 +97,65 @@ type chatResponse struct {
 }
 
 // ChatJSON sends a system+user chat completion request in JSON mode and
-// returns the model's message content as raw JSON. The schema is appended to
-// the user message as a hint — response_format only guarantees valid JSON,
-// not schema conformance — so weaker models still see the expected shape.
+// returns the model's message content as raw JSON. When a schema is provided
+// it is enforced server-side via response_format json_schema and also appended
+// to the user message as a hint for servers that ignore the schema field.
+//
+// Some server/model pairings mishandle structured output (observed: LM Studio
+// json_schema against thinking models returns empty content) — on an empty
+// response or a response_format rejection, one retry is made in plain-text
+// mode, relying on the schema hint in the prompt.
 func (c *Client) ChatJSON(ctx context.Context, system, user, schema string) (json.RawMessage, error) {
-	if schema != "" {
+	format := &responseFormat{Type: "json_object"}
+	if schema != "" && json.Valid([]byte(schema)) {
+		format = &responseFormat{
+			Type:       "json_schema",
+			JSONSchema: &jsonSchemaSpec{Name: "result", Schema: json.RawMessage(schema)},
+		}
 		user = user + "\n\nRespond with JSON matching this schema: " + schema
 	}
 
-	reqBody := chatRequest{
-		Model: c.model,
-		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
-		ResponseFormat: responseFormat{Type: "json_object"},
+	messages := []chatMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: user},
 	}
 
+	content, err := c.complete(ctx, chatRequest{Model: c.model, Messages: messages, ResponseFormat: format})
+	if shouldRetryPlainText(content, err) {
+		content, err = c.complete(ctx, chatRequest{Model: c.model, Messages: messages})
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	content = stripJSONFences(content)
+	if !json.Valid([]byte(content)) {
+		return nil, fmt.Errorf("model returned invalid JSON: %s", truncate(content, 200))
+	}
+	return json.RawMessage(content), nil
+}
+
+// shouldRetryPlainText reports whether a structured-output attempt failed in a
+// way that plain-text mode may fix: empty content, or the server rejecting the
+// response_format field.
+func shouldRetryPlainText(content string, err error) bool {
+	if err == nil {
+		return content == ""
+	}
+	return strings.Contains(err.Error(), "response_format")
+}
+
+// complete executes one chat-completions request and returns the trimmed
+// message content.
+func (c *Client) complete(ctx context.Context, reqBody chatRequest) (string, error) {
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -121,29 +165,37 @@ func (c *Client) ChatJSON(ctx context.Context, system, user, schema string) (jso
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to call chat API: %w", err)
+		return "", fmt.Errorf("failed to call chat API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("chat API returned status %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("chat API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var chatResp chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	if len(chatResp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices returned")
+		return "", fmt.Errorf("no choices returned")
 	}
 
-	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	if !json.Valid([]byte(content)) {
-		return nil, fmt.Errorf("model returned invalid JSON: %s", truncate(content, 200))
+	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+}
+
+// stripJSONFences removes a markdown code fence wrapper if the model emitted
+// one around its JSON
+func stripJSONFences(content string) string {
+	if !strings.HasPrefix(content, "```") {
+		return content
 	}
-	return json.RawMessage(content), nil
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(strings.TrimSpace(content), "```")
+	return strings.TrimSpace(content)
 }
 
 // truncate shortens s to at most n bytes for error messages

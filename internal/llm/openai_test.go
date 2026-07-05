@@ -53,7 +53,11 @@ func TestChatJSON(t *testing.T) {
 				Content string `json:"content"`
 			} `json:"messages"`
 			ResponseFormat struct {
-				Type string `json:"type"`
+				Type       string `json:"type"`
+				JSONSchema *struct {
+					Name   string          `json:"name"`
+					Schema json.RawMessage `json:"schema"`
+				} `json:"json_schema"`
 			} `json:"response_format"`
 		}
 
@@ -83,8 +87,11 @@ func TestChatJSON(t *testing.T) {
 		if gotBody.Model != "test-model" {
 			t.Errorf("Expected model test-model, got %s", gotBody.Model)
 		}
-		if gotBody.ResponseFormat.Type != "json_object" {
-			t.Errorf("Expected response_format json_object, got %q", gotBody.ResponseFormat.Type)
+		if gotBody.ResponseFormat.Type != "json_schema" {
+			t.Errorf("Expected response_format json_schema when a schema is provided, got %q", gotBody.ResponseFormat.Type)
+		}
+		if gotBody.ResponseFormat.JSONSchema == nil || string(gotBody.ResponseFormat.JSONSchema.Schema) != `{"type":"object"}` {
+			t.Errorf("Expected schema embedded in response_format, got %+v", gotBody.ResponseFormat.JSONSchema)
 		}
 		if len(gotBody.Messages) != 2 {
 			t.Fatalf("Expected 2 messages, got %d", len(gotBody.Messages))
@@ -121,6 +128,111 @@ func TestChatJSON(t *testing.T) {
 		client := NewClient(server.URL, "test-model", "", 0)
 		if _, err := client.ChatJSON(context.Background(), "sys", "just the user text", ""); err != nil {
 			t.Fatalf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("falls back to json_object without a schema", func(t *testing.T) {
+		var gotBody chatRequest
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewDecoder(r.Body).Decode(&gotBody)
+			chatOK(`{}`)(w, r)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "", 0)
+		if _, err := client.ChatJSON(context.Background(), "s", "u", ""); err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if gotBody.ResponseFormat.Type != "json_object" {
+			t.Errorf("Expected json_object fallback, got %q", gotBody.ResponseFormat.Type)
+		}
+		if gotBody.ResponseFormat.JSONSchema != nil {
+			t.Errorf("Expected no embedded schema, got %+v", gotBody.ResponseFormat.JSONSchema)
+		}
+	})
+
+	t.Run("retries in plain-text mode when structured output returns empty content", func(t *testing.T) {
+		var calls int
+		var secondBody chatRequest
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			if calls == 1 {
+				chatOK(``)(w, r)
+				return
+			}
+			json.NewDecoder(r.Body).Decode(&secondBody)
+			chatOK(`{"ok":true}`)(w, r)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "", 0)
+		raw, err := client.ChatJSON(context.Background(), "s", "u", `{"type":"object"}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if string(raw) != `{"ok":true}` {
+			t.Errorf("Expected retry payload, got %s", raw)
+		}
+		if calls != 2 {
+			t.Fatalf("Expected exactly 2 calls, got %d", calls)
+		}
+		if secondBody.ResponseFormat != nil {
+			t.Errorf("Retry must omit response_format, got %+v", secondBody.ResponseFormat)
+		}
+	})
+
+	t.Run("retries when server rejects response_format", func(t *testing.T) {
+		var calls int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(`{"error":"'response_format.type' must be 'json_schema' or 'text'"}`))
+				return
+			}
+			chatOK(`{"ok":1}`)(w, r)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "", 0)
+		raw, err := client.ChatJSON(context.Background(), "s", "u", `{"type":"object"}`)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if string(raw) != `{"ok":1}` {
+			t.Errorf("Expected retry payload, got %s", raw)
+		}
+	})
+
+	t.Run("does not retry other API errors", func(t *testing.T) {
+		var calls int
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("model exploded"))
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "", 0)
+		if _, err := client.ChatJSON(context.Background(), "s", "u", `{"type":"object"}`); err == nil {
+			t.Fatal("Expected error")
+		}
+		if calls != 1 {
+			t.Errorf("Expected exactly 1 call for non-format error, got %d", calls)
+		}
+	})
+
+	t.Run("strips markdown fences from content", func(t *testing.T) {
+		server := httptest.NewServer(chatOK("```json\n{\"fenced\":true}\n```"))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-model", "", 0)
+		raw, err := client.ChatJSON(context.Background(), "s", "u", "")
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		if string(raw) != `{"fenced":true}` {
+			t.Errorf("Expected fences stripped, got %s", raw)
 		}
 	})
 
