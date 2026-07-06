@@ -62,7 +62,13 @@ func (c *ClaudeCLI) ChatJSON(ctx context.Context, system, user, schema string) (
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("claude CLI failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		// The CLI often reports errors (rate limits, auth) in its JSON on
+		// stdout with an empty stderr — surface whichever has content
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = truncate(strings.TrimSpace(stdout.String()), 300)
+		}
+		return nil, fmt.Errorf("claude CLI failed: %w (output: %s)", err, detail)
 	}
 
 	envelope, err := parseCLIOutput(stdout.Bytes())

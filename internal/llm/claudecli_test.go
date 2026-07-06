@@ -172,6 +172,21 @@ exit 1`)
 		}
 	})
 
+	t.Run("surfaces stdout detail when stderr is empty on failure", func(t *testing.T) {
+		stub := writeStub(t, `cat > /dev/null
+echo '{"type":"result","is_error":true,"result":"Rate limit reached. Try again later."}'
+exit 1`)
+
+		cli := NewClaudeCLI(stub)
+		_, err := cli.ChatJSON(context.Background(), "s", "u", "{}")
+		if err == nil {
+			t.Fatal("Expected error for nonzero exit")
+		}
+		if !strings.Contains(err.Error(), "Rate limit reached") {
+			t.Errorf("Error should surface stdout detail, got: %v", err)
+		}
+	})
+
 	t.Run("errors on unparseable stdout", func(t *testing.T) {
 		stub := writeStub(t, `cat > /dev/null
 echo 'total garbage'`)
