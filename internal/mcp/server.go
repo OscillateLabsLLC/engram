@@ -403,7 +403,7 @@ func (s *Server) registerTools() {
 	// find_loose_ends tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "find_loose_ends",
-		Description: "Surface weakly-connected corners of the memory graph: episodes with no links and no derived knowledge, entities that appear in only one fact, and small isolated clusters of linked episodes. Useful for deciding what to enrich or link next.",
+		Description: "Surface weakly-connected corners of the memory graph: episodes with no links and no derived knowledge, entities that appear in only one fact, small isolated clusters of linked episodes, and recurring dreams — quarantined facts the Dreamer keeps re-extracting from different episodes that nothing has confirmed. Recurring dreams are worth raising with the user for confirmation or rejection via resolve_knowledge.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -419,6 +419,27 @@ func (s *Server) registerTools() {
 			Required: []string{},
 		},
 	}, s.handleFindLooseEnds)
+
+	// resolve_knowledge tool
+	s.mcpServer.AddTool(mcp.Tool{
+		Name:        "resolve_knowledge",
+		Description: "Record the user's verdict on a knowledge triple, typically a recurring dream surfaced by find_loose_ends. Only use after the user has explicitly confirmed or rejected the fact in conversation. Confirm promotes it to grounded and verified; reject expires it (demoted, never deleted).",
+		InputSchema: mcp.ToolInputSchema{
+			Type: "object",
+			Properties: map[string]interface{}{
+				"triple_id": map[string]interface{}{
+					"type":        "string",
+					"description": "ID of the knowledge triple to resolve",
+				},
+				"action": map[string]interface{}{
+					"type":        "string",
+					"enum":        []string{"confirm", "reject"},
+					"description": "confirm: the user says this fact is true. reject: the user says it is not.",
+				},
+			},
+			Required: []string{"triple_id", "action"},
+		},
+	}, s.handleResolveKnowledge)
 
 	// get_status tool
 	s.mcpServer.AddTool(mcp.Tool{
@@ -1039,6 +1060,34 @@ func (s *Server) handleFindLooseEnds(ctx context.Context, request mcp.CallToolRe
 	}
 
 	result, _ := json.Marshal(looseEnds)
+	return mcp.NewToolResultText(string(result)), nil
+}
+
+func (s *Server) handleResolveKnowledge(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	var params struct {
+		TripleID string `json:"triple_id"`
+		Action   string `json:"action"`
+	}
+
+	if err := parseParams(request.Params.Arguments, &params); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
+	}
+	if params.TripleID == "" {
+		return mcp.NewToolResultError("triple_id is required"), nil
+	}
+	if params.Action != "confirm" && params.Action != "reject" {
+		return mcp.NewToolResultError("action must be 'confirm' or 'reject'"), nil
+	}
+
+	if err := s.store.ResolveKnowledge(ctx, params.TripleID, params.Action == "confirm"); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to resolve knowledge: %v", err)), nil
+	}
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"success": true,
+		"id":      params.TripleID,
+		"action":  params.Action,
+	})
 	return mcp.NewToolResultText(string(result)), nil
 }
 

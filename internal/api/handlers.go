@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/oscillatelabsllc/engram/internal/db"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
 
@@ -378,6 +379,12 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	// surface the count so operators know a re-embed is worthwhile
 	if stale, err := s.store.CountReembedTargets(r.Context(), s.embedder.Model(), false); err == nil {
 		resp["stale_embeddings"] = stale.Total()
+	}
+
+	// Quarantined triples the Dreamer keeps re-extracting — surfaced so
+	// clients know there is something worth discussing with the user
+	if dreams, err := s.store.CountRecurringDreams(r.Context(), db.DefaultDreamRecurrence); err == nil {
+		resp["recurring_dreams"] = dreams
 	}
 
 	successResponse(w, resp)

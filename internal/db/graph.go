@@ -86,6 +86,9 @@ type LooseEnds struct {
 	// IsolatedClusters are connected components of the episode link graph
 	// with 3 or fewer episodes
 	IsolatedClusters [][]string `json:"isolated_clusters"`
+	// RecurringDreams are quarantined triples the Dreamer keeps re-extracting
+	// from distinct episodes — candidates for human confirmation
+	RecurringDreams []models.KnowledgeTriple `json:"recurring_dreams"`
 }
 
 // FindLooseEnds surfaces unlinked episodes, degree-1 entities, and small
@@ -99,6 +102,7 @@ func (s *Store) FindLooseEnds(ctx context.Context, groupID string, limit int) (*
 		UnlinkedEpisodes: []models.Episode{},
 		DanglingEntities: []models.Entity{},
 		IsolatedClusters: [][]string{},
+		RecurringDreams:  []models.KnowledgeTriple{},
 	}
 
 	// Section 1: episodes with no links in either direction and no knowledge
@@ -248,6 +252,15 @@ func (s *Store) FindLooseEnds(ctx context.Context, groupID string, limit int) (*
 			res.IsolatedClusters = append(res.IsolatedClusters, members)
 		}
 	}
+
+	// Section 4: quarantined triples that keep recurring — ideas the Dreamer
+	// keeps having that nothing has anchored, surfaced for human review
+	dreams, err := s.ListRecurringDreams(ctx, groupID, DefaultDreamRecurrence, limit)
+	if err != nil {
+		return nil, err
+	}
+	res.RecurringDreams = dreams
+
 	return res, nil
 }
 
