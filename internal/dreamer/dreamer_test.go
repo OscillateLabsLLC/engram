@@ -79,13 +79,28 @@ func insertEpisode(t *testing.T, store *db.Store, ep *models.Episode) *models.Ep
 	return ep
 }
 
-// searchTriples fetches all knowledge triples via vector search — the fake
-// embedder maps every text onto the same axis so similarity is always 1.0
+// searchTriples fetches grounded knowledge triples via vector search — the
+// fake embedder maps every text onto the same axis so similarity is always
+// 1.0. Quarantined (ungrounded) triples are excluded, matching the default
+// search behavior; use searchAllTriples to include them.
 func searchTriples(t *testing.T, store *db.Store) []models.KnowledgeTriple {
 	t.Helper()
 	emb := make([]float32, 768)
 	emb[0] = 1
-	triples, err := store.SearchKnowledge(context.Background(), emb, "", 100, 0.5)
+	triples, err := store.SearchKnowledge(context.Background(), emb, "", 100, 0.5, false)
+	if err != nil {
+		t.Fatalf("SearchKnowledge failed: %v", err)
+	}
+	return triples
+}
+
+// searchAllTriples is searchTriples but includes quarantined (ungrounded)
+// triples.
+func searchAllTriples(t *testing.T, store *db.Store) []models.KnowledgeTriple {
+	t.Helper()
+	emb := make([]float32, 768)
+	emb[0] = 1
+	triples, err := store.SearchKnowledge(context.Background(), emb, "", 100, 0.5, true)
 	if err != nil {
 		t.Fatalf("SearchKnowledge failed: %v", err)
 	}
@@ -180,7 +195,6 @@ func TestProcessEpisode(t *testing.T) {
 			`{"subject":"Mike","predicate":"annihilates","object":"DuckDB","confidence":0.9}`, // bad predicate
 			`{"subject":"","predicate":"uses","object":"DuckDB","confidence":0.9}`,            // empty subject
 			`{"subject":"Mike","predicate":"uses","object":"","confidence":0.9}`,              // empty object
-			`{"subject":"Zeus","predicate":"uses","object":"Olympus","confidence":0.9}`,       // hallucination
 			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":"high"}`,     // non-numeric confidence
 			`{"subject":"Mike","predicate":"prefers","object":"DuckDB","confidence":0.7}`,     // valid
 		)}
@@ -196,6 +210,27 @@ func TestProcessEpisode(t *testing.T) {
 		}
 		if triples[0].Predicate != "prefers" {
 			t.Errorf("Wrong surviving triple: %+v", triples[0])
+		}
+	})
+
+	t.Run("predicate whitelist, empty fields, and non-numeric confidence are hard rejections not quarantine", func(t *testing.T) {
+		store := setupTestStore(t)
+		llm := &fakeLLM{response: triplesJSON(
+			`{"subject":"Mike","predicate":"annihilates","object":"DuckDB","confidence":0.9}`,
+			`{"subject":"","predicate":"uses","object":"DuckDB","confidence":0.9}`,
+			`{"subject":"Mike","predicate":"uses","object":"","confidence":0.9}`,
+			`{"subject":"Mike","predicate":"uses","object":"DuckDB","confidence":"high"}`,
+		)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
+		ep := insertEpisode(t, store, &models.Episode{Content: "Mike prefers DuckDB", Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+		// Nothing survives even with includeUngrounded — these are hard
+		// rejections, not quarantined.
+		if got := len(searchAllTriples(t, store)); got != 0 {
+			t.Errorf("Expected 0 triples stored (hard rejections), got %d", got)
 		}
 	})
 
@@ -220,7 +255,7 @@ func TestProcessEpisode(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects triple when both sides are ungrounded", func(t *testing.T) {
+	t.Run("quarantines triple when both sides are ungrounded instead of rejecting", func(t *testing.T) {
 		store := setupTestStore(t)
 		llm := &fakeLLM{response: triplesJSON(
 			`{"subject":"Atlantis","predicate":"owns","object":"Excalibur","confidence":0.8}`,
@@ -231,8 +266,20 @@ func TestProcessEpisode(t *testing.T) {
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
 		}
+		// Excluded from default search — quarantined, not gone.
 		if got := len(searchTriples(t, store)); got != 0 {
-			t.Errorf("Expected 0 triples (fully ungrounded hallucination), got %d", got)
+			t.Errorf("Expected 0 triples in default search (quarantined), got %d", got)
+		}
+		// But present when ungrounded triples are explicitly requested.
+		all := searchAllTriples(t, store)
+		if len(all) != 1 {
+			t.Fatalf("Expected the ungrounded triple to be stored (quarantined), got %d", len(all))
+		}
+		if all[0].Grounded {
+			t.Error("Expected quarantined triple to be stored with grounded=false")
+		}
+		if all[0].SubjectName != "Atlantis" || all[0].ObjectName != "Excalibur" {
+			t.Errorf("Wrong quarantined triple: %+v", all[0])
 		}
 	})
 
@@ -281,14 +328,19 @@ func TestProcessEpisode(t *testing.T) {
 		)}
 		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		// Neither side is in the text; "the user" must NOT ground via the
-		// built-in aliases when no owner aliases are configured
+		// built-in aliases when no owner aliases are configured — quarantined,
+		// excluded from default search
 		ep := insertEpisode(t, store, &models.Episode{Content: "Storage notes from today", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
 		}
 		if got := len(searchTriples(t, store)); got != 0 {
-			t.Errorf("Expected 0 triples (no owner aliases configured), got %d", got)
+			t.Errorf("Expected 0 triples in default search (no owner aliases configured), got %d", got)
+		}
+		all := searchAllTriples(t, store)
+		if len(all) != 1 || all[0].Grounded {
+			t.Errorf("Expected the triple quarantined (stored, grounded=false), got %+v", all)
 		}
 	})
 
@@ -327,14 +379,19 @@ func TestProcessEpisode(t *testing.T) {
 		)}
 		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
 		// Neither side is in the text; the subject exists as an entity only
-		// in another group, which must not ground it here
+		// in another group, which must not ground it here — quarantined,
+		// excluded from default search
 		ep := insertEpisode(t, store, &models.Episode{Content: "planning notes for the quarter", Source: "test"})
 
 		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
 			t.Fatalf("ProcessEpisode failed: %v", err)
 		}
 		if got := len(searchTriples(t, store)); got != 0 {
-			t.Errorf("Expected 0 triples (entity exists only in another group), got %d", got)
+			t.Errorf("Expected 0 triples in default search (entity exists only in another group), got %d", got)
+		}
+		all := searchAllTriples(t, store)
+		if len(all) != 1 || all[0].Grounded {
+			t.Errorf("Expected the triple quarantined (stored, grounded=false), got %+v", all)
 		}
 	})
 
@@ -373,6 +430,52 @@ func TestProcessEpisode(t *testing.T) {
 			if !kept[fmt.Sprintf("tool%d", i)] {
 				t.Errorf("tool%d is in the top 20 by confidence and should have been kept", i)
 			}
+		}
+	})
+
+	t.Run("20-cap prefers grounded triples over ungrounded ones on a confidence tie", func(t *testing.T) {
+		store := setupTestStore(t)
+		var many []string
+		// 15 grounded triples (object appears in episode text) and 10
+		// ungrounded ones (object is a pure hallucination, neither side in
+		// text), all at the SAME confidence — a pure tie. Only the 15
+		// grounded ones plus 5 of the ungrounded should survive the cap, with
+		// grounded preferred first.
+		for i := 0; i < 15; i++ {
+			many = append(many, fmt.Sprintf(`{"subject":"Mike","predicate":"uses","object":"groundedtool%d","confidence":0.5}`, i))
+		}
+		for i := 0; i < 10; i++ {
+			many = append(many, fmt.Sprintf(`{"subject":"nonexistent%d","predicate":"uses","object":"phantomtool%d","confidence":0.5}`, i, i))
+		}
+		llm := &fakeLLM{response: triplesJSON(many...)}
+		d := New(store, llm, &fakeEmbedder{}, time.Second, nil, nil)
+		content := "Mike uses"
+		for i := 0; i < 15; i++ {
+			content += fmt.Sprintf(" groundedtool%d", i)
+		}
+		ep := insertEpisode(t, store, &models.Episode{Content: content, Source: "test"})
+
+		if err := d.ProcessEpisode(context.Background(), ep); err != nil {
+			t.Fatalf("ProcessEpisode failed: %v", err)
+		}
+
+		all := searchAllTriples(t, store)
+		if len(all) != 20 {
+			t.Fatalf("Expected 20 triples (capped), got %d", len(all))
+		}
+		groundedCount, ungroundedCount := 0, 0
+		for _, tr := range all {
+			if tr.Grounded {
+				groundedCount++
+			} else {
+				ungroundedCount++
+			}
+		}
+		if groundedCount != 15 {
+			t.Errorf("Expected all 15 grounded triples kept, got %d", groundedCount)
+		}
+		if ungroundedCount != 5 {
+			t.Errorf("Expected exactly 5 ungrounded triples kept (20-cap minus 15 grounded), got %d", ungroundedCount)
 		}
 	})
 

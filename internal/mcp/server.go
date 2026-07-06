@@ -338,6 +338,10 @@ func (s *Server) registerTools() {
 					"minimum":     0.0,
 					"maximum":     1.0,
 				},
+				"include_ungrounded": map[string]interface{}{
+					"type":        "boolean",
+					"description": "Include quarantined triples that could not be grounded in their source episode text (default: false)",
+				},
 			},
 			Required: []string{"query"},
 		},
@@ -830,7 +834,8 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 		GroupID:         params.GroupID,
 		Embedding:       tripleEmb,
 		EmbeddingModel:  s.embedder.Model(),
-		Confidence:      1.0, // Client-written triples get full confidence
+		Confidence:      1.0,  // Client-written triples get full confidence
+		Grounded:        true, // Manually added triples are grounded by definition
 	}
 
 	if err := s.store.InsertKnowledgeTriple(ctx, triple); err != nil {
@@ -897,10 +902,11 @@ var groupIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 func (s *Server) handleSearchKnowledge(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	var params struct {
-		Query         string  `json:"query"`
-		GroupID       string  `json:"group_id"`
-		MaxResults    int     `json:"max_results"`
-		MinSimilarity float64 `json:"min_similarity"`
+		Query             string  `json:"query"`
+		GroupID           string  `json:"group_id"`
+		MaxResults        int     `json:"max_results"`
+		MinSimilarity     float64 `json:"min_similarity"`
+		IncludeUngrounded bool    `json:"include_ungrounded"`
 	}
 
 	if err := parseParams(request.Params.Arguments, &params); err != nil {
@@ -922,7 +928,7 @@ func (s *Server) handleSearchKnowledge(ctx context.Context, request mcp.CallTool
 	}
 
 	// Store applies defaults: max_results 10, min_similarity 0.35
-	triples, err := s.store.SearchKnowledge(ctx, emb, params.GroupID, params.MaxResults, params.MinSimilarity)
+	triples, err := s.store.SearchKnowledge(ctx, emb, params.GroupID, params.MaxResults, params.MinSimilarity, params.IncludeUngrounded)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("knowledge search failed: %v", err)), nil
 	}

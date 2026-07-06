@@ -76,6 +76,8 @@ type KnowledgeTriple struct {
 	ExpiredAt       *time.Time `json:"expired_at,omitempty"`
 	Confidence      float64    `json:"confidence"`
 	Verified        bool       `json:"verified"`
+	Grounded        bool       `json:"grounded"`
+	Recurrence      int        `json:"recurrence"`
 	Metadata        string     `json:"metadata,omitempty"` // JSON string
 
 	// Denormalized fields populated during reads

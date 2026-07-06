@@ -203,6 +203,12 @@ func TestHandleSearchKnowledge(t *testing.T) {
 		if triples[0].SubjectName != "Mike" || triples[0].ObjectName != "DuckDB" {
 			t.Errorf("Wrong triple names: %q / %q", triples[0].SubjectName, triples[0].ObjectName)
 		}
+		if !triples[0].Grounded {
+			t.Error("add_knowledge triples must be stored grounded=true — manual facts are grounded by definition")
+		}
+		if triples[0].Recurrence != 1 {
+			t.Errorf("Expected default recurrence 1, got %d", triples[0].Recurrence)
+		}
 	})
 
 	t.Run("requires a query", func(t *testing.T) {
@@ -219,6 +225,67 @@ func TestHandleSearchKnowledge(t *testing.T) {
 		}))
 		if msg := errorText(t, result); !strings.Contains(msg, "group_id") {
 			t.Errorf("Expected group_id validation error, got %q", msg)
+		}
+	})
+
+	t.Run("excludes quarantined triples by default and includes them with include_ungrounded", func(t *testing.T) {
+		s, store := setupMCPServer(t)
+		ctx := context.Background()
+
+		subject, err := store.InsertEntity(ctx, &models.Entity{CanonicalName: "Atlantis"}, 0.88)
+		if err != nil {
+			t.Fatalf("InsertEntity failed: %v", err)
+		}
+		object, err := store.InsertEntity(ctx, &models.Entity{CanonicalName: "Excalibur"}, 0.88)
+		if err != nil {
+			t.Fatalf("InsertEntity failed: %v", err)
+		}
+		emb, err := s.embedder.Generate(ctx, "Atlantis owns Excalibur")
+		if err != nil {
+			t.Fatalf("Generate failed: %v", err)
+		}
+		if err := store.InsertKnowledgeTriple(ctx, &models.KnowledgeTriple{
+			SubjectEntityID: subject.ID,
+			Predicate:       "owns",
+			ObjectEntityID:  object.ID,
+			Source:          "dreamer/fake-model",
+			Embedding:       emb,
+			EmbeddingModel:  s.embedder.Model(),
+			Grounded:        false,
+		}); err != nil {
+			t.Fatalf("InsertKnowledgeTriple failed: %v", err)
+		}
+
+		defaultResult, err := s.handleSearchKnowledge(ctx, callRequest(map[string]interface{}{
+			"query": "Atlantis owns Excalibur",
+		}))
+		if err != nil {
+			t.Fatalf("handleSearchKnowledge failed: %v", err)
+		}
+		var defaultTriples []models.KnowledgeTriple
+		if err := json.Unmarshal([]byte(resultText(t, defaultResult)), &defaultTriples); err != nil {
+			t.Fatalf("Failed to parse triples: %v", err)
+		}
+		if len(defaultTriples) != 0 {
+			t.Errorf("Expected quarantined triple excluded by default, got %d", len(defaultTriples))
+		}
+
+		includeResult, err := s.handleSearchKnowledge(ctx, callRequest(map[string]interface{}{
+			"query":              "Atlantis owns Excalibur",
+			"include_ungrounded": true,
+		}))
+		if err != nil {
+			t.Fatalf("handleSearchKnowledge failed: %v", err)
+		}
+		var includeTriples []models.KnowledgeTriple
+		if err := json.Unmarshal([]byte(resultText(t, includeResult)), &includeTriples); err != nil {
+			t.Fatalf("Failed to parse triples: %v", err)
+		}
+		if len(includeTriples) != 1 {
+			t.Fatalf("Expected 1 quarantined triple with include_ungrounded=true, got %d", len(includeTriples))
+		}
+		if includeTriples[0].Grounded {
+			t.Error("Expected the returned triple to report grounded=false")
 		}
 	})
 }

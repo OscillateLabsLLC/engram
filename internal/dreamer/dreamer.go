@@ -238,6 +238,7 @@ func (d *Dreamer) ProcessEpisode(ctx context.Context, ep *models.Episode) error 
 			EmbeddingModel:  d.embedder.Model(),
 			Confidence:      tr.Confidence,
 			Verified:        false,
+			Grounded:        tr.grounded,
 		}
 		if err := d.store.InsertKnowledgeTriple(ctx, triple); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: dreamer failed to store triple %q: %v\n", tripleText, err)
@@ -343,16 +344,29 @@ type extractedTriple struct {
 	SubjectType string  `json:"subject_type"`
 	ObjectType  string  `json:"object_type"`
 	Confidence  float64 `json:"confidence"`
+
+	// grounded is set by validateExtraction, not by the LLM: true when at
+	// least one of subject/object is grounded (see isGrounded). Triples
+	// failing grounding on both sides are no longer rejected — they are
+	// quarantined (kept with grounded=false) so later corroborating evidence
+	// can rescue them; see InsertKnowledgeTriple's recurrence promotion.
+	grounded bool
 }
 
 // validateExtraction parses the LLM payload and applies the deterministic
-// validation pipeline: predicate whitelist, non-empty subject/object,
-// confidence clamped to [0,1] (rejected when not a number), and a grounding
-// check — both subject and object must be grounded (see isGrounded). When
-// more than maxTriplesPerEpisode triples survive, the top N by descending
-// confidence are kept (stable sort). Rejections are logged, not errors; an
-// error is returned only when the envelope itself is unparseable. Grounding
-// lookups happen before any entity insertions for the episode.
+// validation pipeline: predicate whitelist, non-empty subject/object, and
+// confidence clamped to [0,1] (rejected when not a number) are hard
+// rejections. Grounding (see isGrounded) is no longer a hard rejection: a
+// triple failing grounding on both sides is quarantined — kept with
+// grounded=false rather than discarded, since a faithful abstraction and a
+// hallucination are hard to tell apart deterministically, and quarantine
+// lets later corroborating evidence rescue it. When more than
+// maxTriplesPerEpisode triples survive, the top N are kept by (grounded
+// desc, confidence desc) — grounded triples are preferred over ungrounded
+// ones on a tie, then by descending confidence (stable sort). Rejections are
+// logged, not errors; an error is returned only when the envelope itself is
+// unparseable. Grounding lookups happen before any entity insertions for the
+// episode.
 func (d *Dreamer) validateExtraction(ctx context.Context, raw json.RawMessage, ep *models.Episode) ([]extractedTriple, error) {
 	var envelope struct {
 		Triples []json.RawMessage `json:"triples"`
@@ -383,19 +397,22 @@ func (d *Dreamer) validateExtraction(ctx context.Context, raw json.RawMessage, e
 		if tr.Confidence > 1 {
 			tr.Confidence = 1
 		}
-		// Require at least ONE side grounded. Backfill evidence: every
-		// confirmed hallucination had BOTH sides ungrounded, while requiring
-		// both sides rejected faithful abstractions (an object phrased as a
-		// concept rather than verbatim text) at ~8x the old false-kill rate.
-		if !d.isGrounded(ctx, tr.Subject, haystack, ep.GroupID) && !d.isGrounded(ctx, tr.Object, haystack, ep.GroupID) {
-			reject(item, "neither subject nor object is grounded (not in episode text, not an owner alias, not a known entity)")
-			continue
-		}
+		// Quarantine, don't reject: a triple grounded on neither side is kept
+		// but marked ungrounded and excluded from search by default, rather
+		// than discarded. Backfill evidence showed every confirmed
+		// hallucination had BOTH sides ungrounded, but requiring grounding to
+		// store anything also silently dropped faithful abstractions (an
+		// object phrased as a concept rather than verbatim text) — quarantine
+		// keeps that data recoverable instead of destroying it.
+		tr.grounded = d.isGrounded(ctx, tr.Subject, haystack, ep.GroupID) || d.isGrounded(ctx, tr.Object, haystack, ep.GroupID)
 		valid = append(valid, tr)
 	}
 
 	if len(valid) > maxTriplesPerEpisode {
 		sort.SliceStable(valid, func(i, j int) bool {
+			if valid[i].grounded != valid[j].grounded {
+				return valid[i].grounded
+			}
 			return valid[i].Confidence > valid[j].Confidence
 		})
 		valid = valid[:maxTriplesPerEpisode]

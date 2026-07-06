@@ -120,6 +120,8 @@ func (s *Store) initialize() error {
 			expired_at TIMESTAMPTZ,
 			confidence FLOAT DEFAULT 1.0,
 			verified BOOLEAN DEFAULT FALSE,
+			grounded BOOLEAN DEFAULT TRUE,
+			recurrence INTEGER DEFAULT 1,
 			metadata JSON
 		);
 		CREATE INDEX IF NOT EXISTS idx_knowledge_subject ON knowledge (subject_entity_id);
@@ -265,6 +267,14 @@ func (s *Store) migrate() error {
 		// Migration 3: dreamer enrichment stamp — NULL means the episode has
 		// not yet been processed by the knowledge-extraction worker
 		`ALTER TABLE episodes ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ`,
+		// Migration 4: quarantine + recurrence — grounded distinguishes triples
+		// the dreamer could anchor to source text from ones it could not
+		// (quarantined, excluded from search by default instead of rejected);
+		// recurrence counts corroboration from distinct episodes. Existing rows
+		// predate quarantine and all passed the old (reject, don't store)
+		// validation, so they default to grounded=TRUE, recurrence=1.
+		`ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS grounded BOOLEAN DEFAULT TRUE`,
+		`ALTER TABLE knowledge ADD COLUMN IF NOT EXISTS recurrence INTEGER DEFAULT 1`,
 	}
 	for _, stmt := range provenance {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -1008,9 +1018,18 @@ func (s *Store) GetEntity(ctx context.Context, id string) (*models.Entity, error
 }
 
 // InsertKnowledgeTriple adds a knowledge triple to the store. Self-loops
-// (subject == object) and exact duplicates (same subject, predicate, object,
-// and group) are silently skipped — neither is an error, since the dreamer
-// treats rejected/duplicate triples as routine, not exceptional.
+// (subject == object) are silently skipped — not an error, since the dreamer
+// treats them as routine, not exceptional.
+//
+// Duplicates (same subject, predicate, object, and group) are handled by
+// provenance instead of being uniformly skipped:
+//   - A duplicate from the SAME source episode is re-run noise (e.g. a
+//     retried dream pass) and is skipped silently, exactly as before.
+//   - A duplicate from a DIFFERENT episode is independent corroboration: the
+//     existing row's recurrence is incremented, its confidence is raised to
+//     the max of the two observations, and — if the incoming triple is
+//     grounded while the stored row is not — the stored row is promoted to
+//     grounded=true. Later grounded evidence can rescue a quarantined idea.
 func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.KnowledgeTriple) error {
 	if triple.SubjectEntityID == triple.ObjectEntityID {
 		fmt.Fprintf(os.Stderr, "Debug: skipping self-loop triple (entity %s, predicate %s)\n", triple.SubjectEntityID, triple.Predicate)
@@ -1030,21 +1049,37 @@ func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.Knowle
 		triple.Confidence = 1.0
 	}
 
-	var exists bool
+	var existingID, existingSourceEpisodeID string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM knowledge
-			WHERE subject_entity_id = ?
-			  AND predicate = ?
-			  AND object_entity_id = ?
-			  AND group_id = ?
-		)
-	`, triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID, triple.GroupID).Scan(&exists)
-	if err != nil {
+		SELECT id, COALESCE(source_episode_id, '') FROM knowledge
+		WHERE subject_entity_id = ?
+		  AND predicate = ?
+		  AND object_entity_id = ?
+		  AND group_id = ?
+		LIMIT 1
+	`, triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID, triple.GroupID).Scan(&existingID, &existingSourceEpisodeID)
+	if err != nil && err != sql.ErrNoRows {
 		return fmt.Errorf("failed to check for duplicate knowledge triple: %w", err)
 	}
-	if exists {
-		fmt.Fprintf(os.Stderr, "Debug: skipping duplicate triple (%s %s %s)\n", triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID)
+	if err == nil {
+		if existingSourceEpisodeID != "" && existingSourceEpisodeID == triple.SourceEpisodeID {
+			fmt.Fprintf(os.Stderr, "Debug: skipping duplicate triple from the same episode (%s %s %s)\n", triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID)
+			return nil
+		}
+		// Corroboration from a distinct episode: bump recurrence, take the
+		// higher confidence, and promote grounding if the new evidence is
+		// grounded and the stored row was not.
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE knowledge
+			SET recurrence = recurrence + 1,
+			    confidence = GREATEST(confidence, ?),
+			    grounded = grounded OR ?
+			WHERE id = ?
+		`, triple.Confidence, triple.Grounded, existingID)
+		if err != nil {
+			return fmt.Errorf("failed to bump recurrence on duplicate knowledge triple: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Debug: bumped recurrence on duplicate triple from a different episode (%s %s %s)\n", triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID)
 		return nil
 	}
 
@@ -1064,16 +1099,20 @@ func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.Knowle
 		embeddingModel = triple.EmbeddingModel
 	}
 
+	if triple.Recurrence == 0 {
+		triple.Recurrence = 1
+	}
+
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO knowledge (
 			id, subject_entity_id, predicate, object_entity_id,
 			source_episode_id, source, group_id, embedding, embedding_model,
-			created_at, expired_at, confidence, verified, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			created_at, expired_at, confidence, verified, grounded, recurrence, metadata
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		triple.ID, triple.SubjectEntityID, triple.Predicate, triple.ObjectEntityID,
 		triple.SourceEpisodeID, triple.Source, triple.GroupID, embeddingJSON, embeddingModel,
-		triple.CreatedAt, triple.ExpiredAt, triple.Confidence, triple.Verified, metadataJSON,
+		triple.CreatedAt, triple.ExpiredAt, triple.Confidence, triple.Verified, triple.Grounded, triple.Recurrence, metadataJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert knowledge triple: %w", err)
@@ -1081,8 +1120,12 @@ func (s *Store) InsertKnowledgeTriple(ctx context.Context, triple *models.Knowle
 	return nil
 }
 
-// SearchKnowledge finds knowledge triples matching the given query embedding
-func (s *Store) SearchKnowledge(ctx context.Context, queryEmbedding []float32, groupID string, maxResults int, minSimilarity float64) ([]models.KnowledgeTriple, error) {
+// SearchKnowledge finds knowledge triples matching the given query embedding.
+// By default only grounded triples are returned; includeUngrounded=true also
+// returns quarantined triples (grounded=false) — those the dreamer could not
+// anchor to their source episode text, kept for later corroboration rather
+// than discarded outright.
+func (s *Store) SearchKnowledge(ctx context.Context, queryEmbedding []float32, groupID string, maxResults int, minSimilarity float64, includeUngrounded bool) ([]models.KnowledgeTriple, error) {
 	if maxResults <= 0 {
 		maxResults = 10
 	}
@@ -1098,7 +1141,7 @@ func (s *Store) SearchKnowledge(ctx context.Context, queryEmbedding []float32, g
 	query := fmt.Sprintf(`
 		SELECT k.id, k.subject_entity_id, k.predicate, k.object_entity_id,
 		       k.source_episode_id, k.source, k.group_id, k.created_at,
-		       k.expired_at, k.confidence, k.verified, k.metadata,
+		       k.expired_at, k.confidence, k.verified, k.grounded, k.recurrence, k.metadata,
 		       se.canonical_name AS subject_name, oe.canonical_name AS object_name,
 		       array_cosine_similarity(k.embedding, %s::FLOAT[768]) AS similarity
 		FROM knowledge k
@@ -1108,6 +1151,10 @@ func (s *Store) SearchKnowledge(ctx context.Context, queryEmbedding []float32, g
 		  AND (k.expired_at IS NULL OR k.expired_at > CURRENT_TIMESTAMP)
 		  AND array_cosine_similarity(k.embedding, %s::FLOAT[768]) >= %f
 	`, string(embJSON), string(embJSON), minSimilarity)
+
+	if !includeUngrounded {
+		query += " AND k.grounded = TRUE"
+	}
 
 	if groupID != "" {
 		query += fmt.Sprintf(" AND k.group_id = '%s'", groupID)
@@ -1129,7 +1176,7 @@ func (s *Store) SearchKnowledge(ctx context.Context, queryEmbedding []float32, g
 		err := rows.Scan(
 			&t.ID, &t.SubjectEntityID, &t.Predicate, &t.ObjectEntityID,
 			&t.SourceEpisodeID, &t.Source, &t.GroupID, &t.CreatedAt,
-			&t.ExpiredAt, &t.Confidence, &t.Verified, &metadataRaw,
+			&t.ExpiredAt, &t.Confidence, &t.Verified, &t.Grounded, &t.Recurrence, &metadataRaw,
 			&t.SubjectName, &t.ObjectName, &similarity,
 		)
 		if err != nil {

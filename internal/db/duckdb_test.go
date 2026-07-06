@@ -2,11 +2,13 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
 
@@ -1848,7 +1850,7 @@ func TestInsertKnowledgeTriple(t *testing.T) {
 		}
 	})
 
-	t.Run("skips duplicate triples", func(t *testing.T) {
+	t.Run("skips duplicate triples from the same episode", func(t *testing.T) {
 		dupSubject, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "DupSubject"}, 0.88)
 		dupObject, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "DupObject"}, 0.88)
 
@@ -1858,6 +1860,7 @@ func TestInsertKnowledgeTriple(t *testing.T) {
 			ObjectEntityID:  dupObject.ID,
 			Source:          "test",
 			GroupID:         "default",
+			SourceEpisodeID: "same-episode",
 		}
 		if err := store.InsertKnowledgeTriple(ctx, first); err != nil {
 			t.Fatalf("Failed to insert first triple: %v", err)
@@ -1868,12 +1871,14 @@ func TestInsertKnowledgeTriple(t *testing.T) {
 			t.Fatalf("countKnowledgeRows failed: %v", err)
 		}
 
+		// Same source_episode_id as first — re-run noise, not corroboration.
 		dup := &models.KnowledgeTriple{
 			SubjectEntityID: dupSubject.ID,
 			Predicate:       "uses",
 			ObjectEntityID:  dupObject.ID,
 			Source:          "test-again",
 			GroupID:         "default",
+			SourceEpisodeID: "same-episode",
 		}
 		if err := store.InsertKnowledgeTriple(ctx, dup); err != nil {
 			t.Fatalf("InsertKnowledgeTriple should not error on duplicate, got: %v", err)
@@ -1885,6 +1890,147 @@ func TestInsertKnowledgeTriple(t *testing.T) {
 		}
 		if after != before {
 			t.Errorf("Expected duplicate triple to be skipped, row count went from %d to %d", before, after)
+		}
+
+		stored, err := store.getKnowledgeTripleByID(ctx, first.ID)
+		if err != nil {
+			t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+		}
+		if stored.Recurrence != 1 {
+			t.Errorf("Same-episode duplicate must not bump recurrence, got %d", stored.Recurrence)
+		}
+	})
+
+	t.Run("duplicate from a different episode bumps recurrence and takes max confidence", func(t *testing.T) {
+		s2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "RecurSubject"}, 0.88)
+		o2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "RecurObject"}, 0.88)
+
+		first := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-1",
+			Confidence: 0.5, Grounded: true,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, first); err != nil {
+			t.Fatalf("Failed to insert first triple: %v", err)
+		}
+
+		before, _ := store.countKnowledgeRows(ctx)
+
+		second := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-2",
+			Confidence: 0.9, Grounded: true,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, second); err != nil {
+			t.Fatalf("InsertKnowledgeTriple should not error on cross-episode duplicate, got: %v", err)
+		}
+
+		after, _ := store.countKnowledgeRows(ctx)
+		if after != before {
+			t.Errorf("Cross-episode duplicate must update the existing row, not insert a new one: row count went from %d to %d", before, after)
+		}
+
+		stored, err := store.getKnowledgeTripleByID(ctx, first.ID)
+		if err != nil {
+			t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+		}
+		if stored.Recurrence != 2 {
+			t.Errorf("Expected recurrence bumped to 2, got %d", stored.Recurrence)
+		}
+		if stored.Confidence != 0.9 {
+			t.Errorf("Expected confidence raised to max(0.5, 0.9)=0.9, got %f", stored.Confidence)
+		}
+
+		// A third, lower-confidence corroboration keeps the max, doesn't lower it
+		third := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-3",
+			Confidence: 0.3, Grounded: true,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, third); err != nil {
+			t.Fatalf("InsertKnowledgeTriple failed: %v", err)
+		}
+		stored, err = store.getKnowledgeTripleByID(ctx, first.ID)
+		if err != nil {
+			t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+		}
+		if stored.Recurrence != 3 {
+			t.Errorf("Expected recurrence bumped to 3, got %d", stored.Recurrence)
+		}
+		if stored.Confidence != 0.9 {
+			t.Errorf("Expected confidence to remain at max 0.9 after a lower-confidence duplicate, got %f", stored.Confidence)
+		}
+	})
+
+	t.Run("grounded duplicate promotes a quarantined row to grounded", func(t *testing.T) {
+		s2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "PromoteSubject"}, 0.88)
+		o2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "PromoteObject"}, 0.88)
+
+		quarantined := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-1",
+			Confidence: 0.4, Grounded: false,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, quarantined); err != nil {
+			t.Fatalf("Failed to insert quarantined triple: %v", err)
+		}
+		stored, err := store.getKnowledgeTripleByID(ctx, quarantined.ID)
+		if err != nil {
+			t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+		}
+		if stored.Grounded {
+			t.Fatal("Precondition failed: triple should start quarantined")
+		}
+
+		groundedDup := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-2",
+			Confidence: 0.6, Grounded: true,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, groundedDup); err != nil {
+			t.Fatalf("InsertKnowledgeTriple failed: %v", err)
+		}
+
+		stored, err = store.getKnowledgeTripleByID(ctx, quarantined.ID)
+		if err != nil {
+			t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+		}
+		if !stored.Grounded {
+			t.Error("Expected independent grounded evidence to promote the quarantined row to grounded=true")
+		}
+		if stored.Recurrence != 2 {
+			t.Errorf("Expected recurrence bumped to 2, got %d", stored.Recurrence)
+		}
+	})
+
+	t.Run("ungrounded duplicate does not demote an already-grounded row", func(t *testing.T) {
+		s2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "StableSubject"}, 0.88)
+		o2, _ := store.InsertEntity(ctx, &models.Entity{CanonicalName: "StableObject"}, 0.88)
+
+		grounded := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-1",
+			Confidence: 0.9, Grounded: true,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, grounded); err != nil {
+			t.Fatalf("Failed to insert grounded triple: %v", err)
+		}
+
+		ungroundedDup := &models.KnowledgeTriple{
+			SubjectEntityID: s2.ID, Predicate: "uses", ObjectEntityID: o2.ID,
+			Source: "test", GroupID: "default", SourceEpisodeID: "episode-2",
+			Confidence: 0.5, Grounded: false,
+		}
+		if err := store.InsertKnowledgeTriple(ctx, ungroundedDup); err != nil {
+			t.Fatalf("InsertKnowledgeTriple failed: %v", err)
+		}
+
+		stored, err := store.getKnowledgeTripleByID(ctx, grounded.ID)
+		if err != nil {
+			t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+		}
+		if !stored.Grounded {
+			t.Error("An already-grounded row must not be demoted by a later ungrounded duplicate")
 		}
 	})
 
@@ -1909,6 +2055,110 @@ func TestInsertKnowledgeTriple(t *testing.T) {
 			t.Errorf("Expected a distinct predicate to be inserted, row count went from %d to %d", before, after)
 		}
 	})
+}
+
+// TestKnowledgeGroundedRecurrenceMigration verifies migration 4 (grounded +
+// recurrence columns) backfills sane defaults for knowledge rows that predate
+// quarantine: grounded=TRUE (every row that existed under the old pipeline
+// passed the old reject-don't-store validation) and recurrence=1. Follows the
+// open-store-twice reopen pattern from TestNoWALLeftBehind
+// (checkpoint_test.go): a legacy schema lacking the two new columns is
+// created directly, seeded, and then opened through the real Store — which
+// runs migrate() — to verify the ALTER TABLE ADD COLUMN IF NOT EXISTS
+// defaults apply to pre-existing rows.
+func TestKnowledgeGroundedRecurrenceMigration(t *testing.T) {
+	dbPath := t.TempDir() + "/legacy.duckdb"
+
+	raw, err := sql.Open("duckdb", dbPath)
+	if err != nil {
+		t.Fatalf("Failed to open legacy database: %v", err)
+	}
+	if _, err := raw.Exec("INSTALL vss"); err != nil {
+		t.Fatalf("Failed to install vss: %v", err)
+	}
+	if _, err := raw.Exec("LOAD vss"); err != nil {
+		t.Fatalf("Failed to load vss: %v", err)
+	}
+
+	// Legacy schema: knowledge table WITHOUT grounded/recurrence columns,
+	// as it existed before this migration.
+	legacySchema := `
+		CREATE TABLE entities (
+			id VARCHAR PRIMARY KEY,
+			canonical_name TEXT NOT NULL,
+			entity_type VARCHAR,
+			embedding FLOAT[768],
+			embedding_model VARCHAR,
+			group_id VARCHAR DEFAULT 'default',
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			metadata JSON
+		);
+		CREATE TABLE knowledge (
+			id VARCHAR PRIMARY KEY,
+			subject_entity_id VARCHAR NOT NULL,
+			predicate VARCHAR NOT NULL,
+			object_entity_id VARCHAR NOT NULL,
+			source_episode_id VARCHAR,
+			source VARCHAR NOT NULL,
+			group_id VARCHAR DEFAULT 'default',
+			embedding FLOAT[768],
+			embedding_model VARCHAR,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			expired_at TIMESTAMPTZ,
+			confidence FLOAT DEFAULT 1.0,
+			verified BOOLEAN DEFAULT FALSE,
+			metadata JSON
+		);
+		CREATE TABLE episodes (
+			id VARCHAR PRIMARY KEY,
+			content TEXT NOT NULL,
+			name VARCHAR,
+			source VARCHAR NOT NULL,
+			source_model VARCHAR,
+			source_description TEXT,
+			group_id VARCHAR DEFAULT 'default',
+			tags VARCHAR[],
+			embedding FLOAT[768],
+			embedding_model VARCHAR,
+			created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+			valid_at TIMESTAMPTZ,
+			expired_at TIMESTAMPTZ,
+			metadata JSON
+		);
+	`
+	if _, err := raw.Exec(legacySchema); err != nil {
+		t.Fatalf("Failed to create legacy schema: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO entities (id, canonical_name) VALUES ('e1', 'A'), ('e2', 'B')`); err != nil {
+		t.Fatalf("Failed to seed legacy entities: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO knowledge (id, subject_entity_id, predicate, object_entity_id, source) VALUES ('k1', 'e1', 'uses', 'e2', 'test')`); err != nil {
+		t.Fatalf("Failed to seed legacy knowledge row: %v", err)
+	}
+	if _, err := raw.Exec("CHECKPOINT"); err != nil {
+		t.Fatalf("Failed to checkpoint legacy database: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("Failed to close legacy database: %v", err)
+	}
+
+	// Reopen through the real Store, which runs migrate() on open.
+	store, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("Failed to reopen legacy database through Store: %v", err)
+	}
+	defer store.Close()
+
+	tr, err := store.getKnowledgeTripleByID(context.Background(), "k1")
+	if err != nil {
+		t.Fatalf("getKnowledgeTripleByID failed: %v", err)
+	}
+	if !tr.Grounded {
+		t.Error("Expected pre-existing knowledge row to default to grounded=TRUE after migration")
+	}
+	if tr.Recurrence != 1 {
+		t.Errorf("Expected pre-existing knowledge row to default to recurrence=1 after migration, got %d", tr.Recurrence)
+	}
 }
 
 func TestInsertEpisodeLink(t *testing.T) {
@@ -2122,4 +2372,18 @@ func (s *Store) countKnowledgeRows(ctx context.Context) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM knowledge").Scan(&count)
 	return count, err
+}
+
+// getKnowledgeTripleByID reads back a single knowledge row's grounded,
+// recurrence, and confidence fields — used to assert InsertKnowledgeTriple's
+// recurrence/promotion behavior on cross-episode duplicates.
+func (s *Store) getKnowledgeTripleByID(ctx context.Context, id string) (*models.KnowledgeTriple, error) {
+	var t models.KnowledgeTriple
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, confidence, grounded, recurrence FROM knowledge WHERE id = ?
+	`, id).Scan(&t.ID, &t.Confidence, &t.Grounded, &t.Recurrence)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }
