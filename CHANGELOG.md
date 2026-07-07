@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.6.2](https://github.com/OscillateLabsLLC/engram/compare/v2.6.1...v2.6.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* **reembed:** exclude expired episodes and knowledge from re-embed ([07e7fa6](https://github.com/OscillateLabsLLC/engram/commit/07e7fa67cfb3a4eefac607dd650fcdaf779b128e))
+* **reembed:** exclude expired episodes and knowledge from re-embed ([ef26b6e](https://github.com/OscillateLabsLLC/engram/commit/ef26b6e31420f78ce1a94deb8aa487abb994199d))
+
 ## [2.6.1](https://github.com/OscillateLabsLLC/engram/compare/v2.6.0...v2.6.1) (2026-07-05)
 
 
