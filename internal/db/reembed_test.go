@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
@@ -207,6 +208,56 @@ func TestListKnowledgeForReembed(t *testing.T) {
 		}
 		if counts.Entities != 1 || counts.Knowledge != 0 {
 			t.Errorf("Expected 1 stale entity and 0 stale knowledge, got %d/%d", counts.Entities, counts.Knowledge)
+		}
+	})
+}
+
+func TestReembedSkipsExpiredRows(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	past := time.Now().Add(-time.Hour)
+	// An expired episode that was never embedded (e.g. content over the
+	// model's context window, split into smaller episodes and retired)
+	expired := &models.Episode{Content: "expired never embedded", Source: "test", ExpiredAt: &past}
+	stale := &models.Episode{Content: "live stale", Source: "test"}
+	for _, ep := range []*models.Episode{expired, stale} {
+		if err := store.InsertEpisode(ctx, ep); err != nil {
+			t.Fatalf("Failed to insert episode: %v", err)
+		}
+	}
+
+	t.Run("expired rows are not counted stale", func(t *testing.T) {
+		counts, err := store.CountReembedTargets(ctx, "new-model", false)
+		if err != nil {
+			t.Fatalf("CountReembedTargets failed: %v", err)
+		}
+		if counts.Episodes != 1 {
+			t.Errorf("Expected 1 stale episode (expired excluded), got %d", counts.Episodes)
+		}
+	})
+
+	t.Run("expired rows are not counted with force", func(t *testing.T) {
+		counts, err := store.CountReembedTargets(ctx, "new-model", true)
+		if err != nil {
+			t.Fatalf("CountReembedTargets failed: %v", err)
+		}
+		if counts.Episodes != 1 {
+			t.Errorf("Expected 1 episode with force (expired excluded), got %d", counts.Episodes)
+		}
+	})
+
+	t.Run("expired rows are not listed for re-embed", func(t *testing.T) {
+		items, err := store.ListEpisodesForReembed(ctx, "new-model", "", 10, false)
+		if err != nil {
+			t.Fatalf("ListEpisodesForReembed failed: %v", err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("Expected 1 episode listed, got %d", len(items))
+		}
+		if items[0].ID != stale.ID {
+			t.Errorf("Expected the live stale episode, got %s", items[0].ID)
 		}
 	})
 }

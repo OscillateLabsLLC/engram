@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ReembedItem is a row whose embedding needs (re)generation
@@ -30,23 +31,36 @@ func (c StaleEmbeddingCounts) Total() int {
 // rows) as stale.
 const stalePredicate = "(embedding IS NULL OR embedding_model IS DISTINCT FROM ?)"
 
+// livePredicate excludes expired rows: re-embedding them wastes work, and an
+// expired row that can never embed (e.g. content over the model's context
+// window) would otherwise keep the stale count from reaching zero.
+const livePredicate = "(expired_at IS NULL OR expired_at > CURRENT_TIMESTAMP)"
+
 // CountReembedTargets counts rows the re-embed pass would touch. With force,
-// every row counts; otherwise only stale rows (see stalePredicate).
+// every live row counts; otherwise only live stale rows (see stalePredicate).
 func (s *Store) CountReembedTargets(ctx context.Context, model string, force bool) (StaleEmbeddingCounts, error) {
 	var counts StaleEmbeddingCounts
 	for _, t := range []struct {
 		table string
+		live  string // empty for tables without expiry
 		dest  *int
 	}{
-		{"episodes", &counts.Episodes},
-		{"entities", &counts.Entities},
-		{"knowledge", &counts.Knowledge},
+		{"episodes", livePredicate, &counts.Episodes},
+		{"entities", "", &counts.Entities},
+		{"knowledge", livePredicate, &counts.Knowledge},
 	} {
-		query := fmt.Sprintf("SELECT COUNT(*) FROM %s", t.table)
+		var conds []string
 		args := []interface{}{}
+		if t.live != "" {
+			conds = append(conds, t.live)
+		}
 		if !force {
-			query += " WHERE " + stalePredicate
+			conds = append(conds, stalePredicate)
 			args = append(args, model)
+		}
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s", t.table)
+		if len(conds) > 0 {
+			query += " WHERE " + strings.Join(conds, " AND ")
 		}
 		if err := s.db.QueryRowContext(ctx, query, args...).Scan(t.dest); err != nil {
 			return counts, fmt.Errorf("failed to count %s re-embed targets: %w", t.table, err)
@@ -85,7 +99,7 @@ func (s *Store) listForReembed(ctx context.Context, query string, model string, 
 // ListEpisodesForReembed returns the next batch of episodes to re-embed,
 // ordered by id, starting after afterID. The Text field is the episode content.
 func (s *Store) ListEpisodesForReembed(ctx context.Context, model string, afterID string, limit int, force bool) ([]ReembedItem, error) {
-	query := "SELECT id, content FROM episodes WHERE id > ?"
+	query := "SELECT id, content FROM episodes WHERE id > ? AND " + livePredicate
 	if !force {
 		query += " AND " + stalePredicate
 	}
@@ -121,7 +135,8 @@ func (s *Store) ListKnowledgeForReembed(ctx context.Context, model string, after
 		FROM knowledge k
 		JOIN entities se ON k.subject_entity_id = se.id
 		JOIN entities oe ON k.object_entity_id = oe.id
-		WHERE k.id > ?`
+		WHERE k.id > ?
+		  AND (k.expired_at IS NULL OR k.expired_at > CURRENT_TIMESTAMP)`
 	if !force {
 		query += " AND (k.embedding IS NULL OR k.embedding_model IS DISTINCT FROM ?)"
 	}
