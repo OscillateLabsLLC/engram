@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.7.0](https://github.com/OscillateLabsLLC/engram/compare/v2.6.2...v2.7.0) (2026-07-07)
+
+
+### Features
+
+* **health:** active embedding-endpoint probe in /health, /status, and MCP get_status ([4a2d679](https://github.com/OscillateLabsLLC/engram/commit/4a2d6793ecaf583a36c15708f8d05028f5195977))
+* **health:** active embedding-endpoint probe surfaced in health and status ([da6386b](https://github.com/OscillateLabsLLC/engram/commit/da6386b774fc4c0893577e641d47b8c1f51f7a19))
+
 ## [2.6.2](https://github.com/OscillateLabsLLC/engram/compare/v2.6.1...v2.6.2) (2026-07-07)
 
 
