@@ -9,6 +9,7 @@ import (
 
 	"github.com/oscillatelabsllc/engram/internal/db"
 	"github.com/oscillatelabsllc/engram/internal/embedding"
+	"github.com/oscillatelabsllc/engram/internal/health"
 )
 
 func setupTestServer(t *testing.T) *Server {
@@ -93,4 +94,56 @@ func TestShutdown(t *testing.T) {
 			t.Errorf("Expected nil error, got %v", err)
 		}
 	})
+}
+
+type stubEmbeddingHealth struct{ status health.EmbeddingStatus }
+
+func (s *stubEmbeddingHealth) Status() health.EmbeddingStatus { return s.status }
+
+func TestHealthEndpointReportsEmbeddingStatus(t *testing.T) {
+	s := setupTestServer(t)
+	s.SetEmbeddingHealth(&stubEmbeddingHealth{status: health.EmbeddingStatus{
+		Status: "degraded", Model: "nomic-embed-text", Error: "connection refused",
+	}})
+
+	req := httptest.NewRequest("GET", "/health", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	// Liveness must stay 200 — embedding is an external dependency and a
+	// pod restart cannot fix it
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200 even when degraded, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	emb, ok := body["embedding"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected embedding block in health response, got %v", body)
+	}
+	if emb["status"] != "degraded" || emb["error"] != "connection refused" {
+		t.Errorf("Expected degraded embedding status with error, got %v", emb)
+	}
+}
+
+func TestStatusEndpointDegradesOnEmbeddingFailure(t *testing.T) {
+	s := setupTestServer(t)
+	s.SetEmbeddingHealth(&stubEmbeddingHealth{status: health.EmbeddingStatus{
+		Status: "degraded", Model: "nomic-embed-text", Error: "boom",
+	}})
+
+	req := httptest.NewRequest("GET", "/api/v1/status", nil)
+	w := httptest.NewRecorder()
+	s.router.ServeHTTP(w, req)
+
+	var body map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+	if body["status"] != "degraded" {
+		t.Errorf("Expected top-level status degraded, got %v", body["status"])
+	}
 }

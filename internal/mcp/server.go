@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/oscillatelabsllc/engram/internal/db"
+	"github.com/oscillatelabsllc/engram/internal/health"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
 
@@ -20,11 +21,23 @@ type Embedder interface {
 	Model() string
 }
 
+// EmbeddingHealth reports the latest embedding-endpoint probe result
+type EmbeddingHealth interface {
+	Status() health.EmbeddingStatus
+}
+
 // Server implements the MCP server for Engram
 type Server struct {
-	store     *db.Store
-	embedder  Embedder
-	mcpServer *server.MCPServer
+	store           *db.Store
+	embedder        Embedder
+	embeddingHealth EmbeddingHealth
+	mcpServer       *server.MCPServer
+}
+
+// SetEmbeddingHealth attaches a background embedding prober whose snapshot is
+// reported by the get_status tool. Optional.
+func (s *Server) SetEmbeddingHealth(h EmbeddingHealth) {
+	s.embeddingHealth = h
 }
 
 // NewServer creates a new MCP server
@@ -568,13 +581,28 @@ func (s *Server) handleUpdateEpisode(ctx context.Context, request mcp.CallToolRe
 }
 
 func (s *Server) handleGetStatus(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// Simple health check
-	result, _ := json.Marshal(map[string]interface{}{
-		"status":  "healthy",
-		"version": "1.0.0",
-		"message": "Engram memory system is operational",
-	})
+	resp := map[string]interface{}{
+		"status":          "healthy",
+		"version":         "1.0.0",
+		"embedding_model": s.embedder.Model(),
+	}
 
+	if count, err := s.store.CountEpisodes(ctx); err == nil {
+		resp["episode_count"] = count
+	}
+
+	// A degraded embedding endpoint silently downgrades search to
+	// keyword-only — agents reading status must be able to see it
+	if s.embeddingHealth != nil {
+		emb := s.embeddingHealth.Status()
+		resp["embedding"] = emb
+		if emb.Status == "degraded" {
+			resp["status"] = "degraded"
+			resp["message"] = "embedding endpoint unavailable: vector search degraded to keyword-only"
+		}
+	}
+
+	result, _ := json.Marshal(resp)
 	return mcp.NewToolResultText(string(result)), nil
 }
 
