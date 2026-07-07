@@ -15,6 +15,7 @@ import (
 	"github.com/oscillatelabsllc/engram/internal/api"
 	"github.com/oscillatelabsllc/engram/internal/db"
 	"github.com/oscillatelabsllc/engram/internal/embedding"
+	"github.com/oscillatelabsllc/engram/internal/health"
 	"github.com/oscillatelabsllc/engram/internal/mcp"
 	"github.com/oscillatelabsllc/engram/internal/proxy"
 )
@@ -111,6 +112,22 @@ func runServe(args []string) {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Background embedding probe: a dead embedding endpoint silently
+	// degrades search to keyword-only, so probe it actively and surface
+	// the result in /health, /status, and the MCP get_status tool.
+	probeInterval := 5 * time.Minute
+	if v := os.Getenv("ENGRAM_EMBEDDING_PROBE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			probeInterval = d
+		} else {
+			fmt.Fprintf(os.Stderr, "WARNING: invalid ENGRAM_EMBEDDING_PROBE_INTERVAL %q, using %s\n", v, probeInterval)
+		}
+	}
+	prober := health.NewEmbeddingProber(embedder, probeInterval, 768)
+	prober.Start(ctx)
+	apiServer.SetEmbeddingHealth(prober)
+	mcpServer.SetEmbeddingHealth(prober)
 
 	// The process must not exit before store.Close() completes — DuckDB
 	// checkpoints its WAL on close, and an unflushed WAL containing the

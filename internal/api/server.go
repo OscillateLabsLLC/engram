@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/oscillatelabsllc/engram/internal/db"
+	"github.com/oscillatelabsllc/engram/internal/health"
 	"github.com/oscillatelabsllc/engram/internal/models"
 )
 
@@ -24,15 +25,21 @@ type Embedder interface {
 	Model() string
 }
 
+// EmbeddingHealth reports the latest embedding-endpoint probe result
+type EmbeddingHealth interface {
+	Status() health.EmbeddingStatus
+}
+
 // Server implements the HTTP API server for Engram
 type Server struct {
-	store      *db.Store
-	embedder   Embedder
-	router     *chi.Mux
-	port       string
-	httpServer *http.Server
-	sseServer  *server.SSEServer
-	mcpServer  *server.MCPServer
+	store           *db.Store
+	embedder        Embedder
+	embeddingHealth EmbeddingHealth
+	router          *chi.Mux
+	port            string
+	httpServer      *http.Server
+	sseServer       *server.SSEServer
+	mcpServer       *server.MCPServer
 
 	// Re-embed job state (see reembed.go)
 	reembedMu     sync.Mutex
@@ -50,6 +57,13 @@ func NewServer(store *db.Store, embedder Embedder, port string) *Server {
 
 	s.setupRouter()
 	return s
+}
+
+// SetEmbeddingHealth attaches a background embedding prober whose snapshot is
+// reported by /health and /status. Optional: without it, embedding health is
+// simply omitted from responses.
+func (s *Server) SetEmbeddingHealth(h EmbeddingHealth) {
+	s.embeddingHealth = h
 }
 
 // setupRouter configures all HTTP routes
@@ -126,10 +140,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// handleHealth returns 200 OK if server is running
+// handleHealth returns 200 OK if server is running. Embedding health is
+// reported in the body but never changes the status code: a broken embedding
+// endpoint degrades search to keyword-only, and restarting the pod (what a
+// failing liveness probe triggers) cannot fix an external dependency.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{"status": "healthy"}
+	if s.embeddingHealth != nil {
+		resp["embedding"] = s.embeddingHealth.Status()
+	}
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // handleReady checks if dependencies (DB, embedder) are ready

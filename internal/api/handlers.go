@@ -374,6 +374,16 @@ func (s *Server) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 		"reembed_running": reembedRunning,
 	}
 
+	// Live probe result: a degraded embedding endpoint silently downgrades
+	// search to keyword-only, so surface it wherever operators look
+	if s.embeddingHealth != nil {
+		emb := s.embeddingHealth.Status()
+		resp["embedding"] = emb
+		if emb.Status == "degraded" {
+			resp["status"] = "degraded"
+		}
+	}
+
 	// Stale embeddings signal a model swap or past embedding failures;
 	// surface the count so operators know a re-embed is worthwhile
 	if stale, err := s.store.CountReembedTargets(r.Context(), s.embedder.Model(), false); err == nil {
