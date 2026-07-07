@@ -230,7 +230,7 @@ func (s *Server) registerTools() {
 	// add_knowledge tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "add_knowledge",
-		Description: "Store a knowledge fact as a subject-predicate-object triple. Triples link back to their source episode for provenance. Entities are automatically resolved — if a semantically matching entity already exists, it will be reused rather than duplicated.\n\nAllowed predicates: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via",
+		Description: "Store a knowledge fact as a subject-predicate-object triple. Triples link back to their source episode for provenance. Entities are automatically resolved — if a semantically matching entity already exists, it will be reused rather than duplicated.\n\nPreferred predicates: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via. Prefer one of these when it fits — consistent predicates make the graph traversable. When none captures the relationship, a novel lowercase snake_case predicate (e.g. 'family_of', 'mentors') is accepted; avoid 'related_to' when something more specific exists.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -240,8 +240,7 @@ func (s *Server) registerTools() {
 				},
 				"predicate": map[string]interface{}{
 					"type":        "string",
-					"description": "The relationship",
-					"enum":        []string{"owns", "works_at", "contributes_to", "uses", "prefers", "builds", "depends_on", "located_in", "related_to", "part_of", "instance_of", "created_by", "configured_with", "deployed_on", "communicates_via"},
+					"description": "The relationship, lowercase snake_case. Prefer the vocabulary in the tool description; novel predicates are accepted when none fits.",
 				},
 				"object": map[string]interface{}{
 					"type":        "string",
@@ -594,16 +593,15 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("invalid parameters: %v", err)), nil
 	}
 
-	// Validate predicate against controlled vocabulary
-	validPredicates := map[string]bool{
-		"owns": true, "works_at": true, "contributes_to": true, "uses": true,
-		"prefers": true, "builds": true, "depends_on": true, "located_in": true,
-		"related_to": true, "part_of": true, "instance_of": true, "created_by": true,
-		"configured_with": true, "deployed_on": true, "communicates_via": true,
+	// Normalize and shape-check the predicate. Assertion-time predicates are
+	// deliberately open — the writing agent knows the nuance of the
+	// relationship better than a fixed list does. Only the automated
+	// extraction pipeline constrains itself to the core vocabulary.
+	predicate, novel, err := normalizePredicate(params.Predicate)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if !validPredicates[params.Predicate] {
-		return mcp.NewToolResultError(fmt.Sprintf("invalid predicate %q: must be one of: owns, works_at, contributes_to, uses, prefers, builds, depends_on, located_in, related_to, part_of, instance_of, created_by, configured_with, deployed_on, communicates_via", params.Predicate)), nil
-	}
+	params.Predicate = predicate
 
 	// Resolve subject entity (embed name, match or create)
 	embedCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -671,7 +669,7 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 		return mcp.NewToolResultError(fmt.Sprintf("failed to store knowledge triple: %v", err)), nil
 	}
 
-	result, _ := json.Marshal(map[string]interface{}{
+	resp := map[string]interface{}{
 		"success":           true,
 		"triple_id":         triple.ID,
 		"subject_entity_id": subjectEntity.ID,
@@ -679,7 +677,11 @@ func (s *Server) handleAddKnowledge(ctx context.Context, request mcp.CallToolReq
 		"object_entity_id":  objectEntity.ID,
 		"object_name":       objectEntity.CanonicalName,
 		"message":           fmt.Sprintf("Stored: %s %s %s", subjectEntity.CanonicalName, params.Predicate, objectEntity.CanonicalName),
-	})
+	}
+	if novel {
+		resp["note"] = fmt.Sprintf("predicate %q is outside the core vocabulary — accepted; prefer a core predicate when one fits", params.Predicate)
+	}
+	result, _ := json.Marshal(resp)
 
 	return mcp.NewToolResultText(string(result)), nil
 }
