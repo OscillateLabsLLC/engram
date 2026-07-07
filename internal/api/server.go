@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -37,9 +39,13 @@ type Server struct {
 	embeddingHealth EmbeddingHealth
 	router          *chi.Mux
 	port            string
-	httpServer      *http.Server
-	sseServer       *server.SSEServer
-	mcpServer       *server.MCPServer
+
+	mu         sync.Mutex // guards httpServer and listenAddr
+	httpServer *http.Server
+	listenAddr string
+
+	sseServer *server.SSEServer
+	mcpServer *server.MCPServer
 
 	// Re-embed job state (see reembed.go)
 	reembedMu     sync.Mutex
@@ -116,28 +122,67 @@ func (s *Server) setupRouter() {
 	s.router = r
 }
 
+// shutdownGrace bounds the graceful-drain phase of Shutdown. SSE connections
+// never close on their own, so an unbounded drain hangs forever; after the
+// grace period remaining connections are force-closed so the process can
+// reach store.Close() and checkpoint the WAL.
+const shutdownGrace = 10 * time.Second
+
 // Serve starts the HTTP server. It blocks until the server is shut down.
 // Returns nil on clean shutdown via Shutdown(), or an error on failure.
 func (s *Server) Serve() error {
 	addr := fmt.Sprintf(":%s", s.port)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.listenAddr = ln.Addr().String()
 	s.httpServer = &http.Server{
 		Addr:    addr,
 		Handler: s.router,
 	}
-	err := s.httpServer.ListenAndServe()
+	srv := s.httpServer
+	s.mu.Unlock()
+
+	err = srv.Serve(ln)
 	if err == http.ErrServerClosed {
 		return nil
 	}
 	return err
 }
 
-// Shutdown gracefully shuts down the HTTP server.
+// Addr returns the address the server is listening on ("" before Serve)
+func (s *Server) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listenAddr
+}
+
+// Shutdown stops the HTTP server: graceful drain bounded by shutdownGrace,
+// then force-close. Long-lived SSE/MCP connections never drain voluntarily —
+// the SSE server is mounted on the router rather than owning the listener, so
+// its session-closing Shutdown path never runs, and an unbounded
+// http.Server.Shutdown blocks until every client disconnects. A deploy that
+// hangs here ends in SIGKILL before the DuckDB store closes, which is a
+// data-durability problem, not a cosmetic one.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.stopReembed()
-	if s.httpServer != nil {
-		return s.httpServer.Shutdown(ctx)
+	s.mu.Lock()
+	srv := s.httpServer
+	s.mu.Unlock()
+	if srv == nil {
+		return nil
 	}
-	return nil
+
+	dctx, cancel := context.WithTimeout(ctx, shutdownGrace)
+	defer cancel()
+	err := srv.Shutdown(dctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		fmt.Fprintf(os.Stderr, "Shutdown: connections still open after %s grace (SSE clients), force-closing\n", shutdownGrace)
+		return srv.Close()
+	}
+	return err
 }
 
 // handleHealth returns 200 OK if server is running. Embedding health is
