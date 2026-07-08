@@ -16,14 +16,12 @@ type ReembedItem struct {
 // StaleEmbeddingCounts reports rows per table whose embedding is missing or
 // was produced by a different model than the one currently configured
 type StaleEmbeddingCounts struct {
-	Episodes  int `json:"episodes"`
-	Entities  int `json:"entities"`
-	Knowledge int `json:"knowledge"`
+	Episodes int `json:"episodes"`
 }
 
 // Total returns the sum across all tables
 func (c StaleEmbeddingCounts) Total() int {
-	return c.Episodes + c.Entities + c.Knowledge
+	return c.Episodes
 }
 
 // stalePredicate matches rows with no embedding or an embedding produced by
@@ -46,8 +44,6 @@ func (s *Store) CountReembedTargets(ctx context.Context, model string, force boo
 		dest  *int
 	}{
 		{"episodes", livePredicate, &counts.Episodes},
-		{"entities", "", &counts.Entities},
-		{"knowledge", livePredicate, &counts.Knowledge},
 	} {
 		var conds []string
 		args := []interface{}{}
@@ -111,43 +107,6 @@ func (s *Store) ListEpisodesForReembed(ctx context.Context, model string, afterI
 	return items, nil
 }
 
-// ListEntitiesForReembed returns the next batch of entities to re-embed.
-// The Text field is the canonical name (matching the original embed input).
-func (s *Store) ListEntitiesForReembed(ctx context.Context, model string, afterID string, limit int, force bool) ([]ReembedItem, error) {
-	query := "SELECT id, canonical_name FROM entities WHERE id > ?"
-	if !force {
-		query += " AND " + stalePredicate
-	}
-	query += " ORDER BY id LIMIT ?"
-	items, err := s.listForReembed(ctx, query, model, afterID, limit, force)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list entities for re-embed: %w", err)
-	}
-	return items, nil
-}
-
-// ListKnowledgeForReembed returns the next batch of knowledge triples to
-// re-embed. The Text field is the "subject predicate object" triple text,
-// matching how handleAddKnowledge composes the original embed input.
-func (s *Store) ListKnowledgeForReembed(ctx context.Context, model string, afterID string, limit int, force bool) ([]ReembedItem, error) {
-	query := `
-		SELECT k.id, se.canonical_name || ' ' || k.predicate || ' ' || oe.canonical_name
-		FROM knowledge k
-		JOIN entities se ON k.subject_entity_id = se.id
-		JOIN entities oe ON k.object_entity_id = oe.id
-		WHERE k.id > ?
-		  AND (k.expired_at IS NULL OR k.expired_at > CURRENT_TIMESTAMP)`
-	if !force {
-		query += " AND (k.embedding IS NULL OR k.embedding_model IS DISTINCT FROM ?)"
-	}
-	query += " ORDER BY k.id LIMIT ?"
-	items, err := s.listForReembed(ctx, query, model, afterID, limit, force)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list knowledge for re-embed: %w", err)
-	}
-	return items, nil
-}
-
 // updateEmbedding writes a fresh vector and its provenance stamp. The table
 // name is always one of the fixed internal callers below, never user input.
 func (s *Store) updateEmbedding(ctx context.Context, table, id string, embedding []float32, model string) error {
@@ -169,14 +128,4 @@ func (s *Store) updateEmbedding(ctx context.Context, table, id string, embedding
 // UpdateEpisodeEmbedding replaces an episode's embedding and provenance stamp
 func (s *Store) UpdateEpisodeEmbedding(ctx context.Context, id string, embedding []float32, model string) error {
 	return s.updateEmbedding(ctx, "episodes", id, embedding, model)
-}
-
-// UpdateEntityEmbedding replaces an entity's embedding and provenance stamp
-func (s *Store) UpdateEntityEmbedding(ctx context.Context, id string, embedding []float32, model string) error {
-	return s.updateEmbedding(ctx, "entities", id, embedding, model)
-}
-
-// UpdateKnowledgeEmbedding replaces a knowledge triple's embedding and provenance stamp
-func (s *Store) UpdateKnowledgeEmbedding(ctx context.Context, id string, embedding []float32, model string) error {
-	return s.updateEmbedding(ctx, "knowledge", id, embedding, model)
 }
