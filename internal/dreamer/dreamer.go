@@ -250,6 +250,16 @@ func (d *Dreamer) ProcessEpisode(ctx context.Context, ep *models.Episode) error 
 
 	d.linkSharedEntityEpisodes(ctx, ep.ID, entityIDs)
 
+	// Promote explicit supersession/correction prose ("SUPERSEDES <id>",
+	// "CORRECTION ... DEAD END <id>") into typed episode links. Co-occurrence
+	// (same_entity) alone can't tell traversal what replaced what; these typed
+	// edges are what let graph_depth answer recency/contradiction questions.
+	if sup, con, err := d.store.LinkSemanticEpisodeMarkers(ctx, ep); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: dreamer failed to link semantic markers for %s: %v\n", ep.ID, err)
+	} else if sup+con > 0 {
+		fmt.Fprintf(os.Stderr, "Dreamer: episode %s produced %d supersedes, %d contradicts edges\n", ep.ID, sup, con)
+	}
+
 	return d.store.MarkEpisodeEnriched(ctx, ep.ID, "")
 }
 

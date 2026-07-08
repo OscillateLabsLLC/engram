@@ -177,6 +177,33 @@ func (s *Server) runDream(ctx context.Context) {
 		final.Done-final.Failed, final.Total, final.Failed)
 }
 
+// handleRelinkEpisodes derives same_entity episode links from the existing
+// knowledge graph, without re-running enrichment. This backfills episode_links
+// for a corpus whose triples were bulk-loaded (bypassing the dreamer's
+// incremental linking) so graph_depth traversal has edges to walk. It is
+// idempotent and synchronous — the derivation is pure SQL over existing rows,
+// no LLM calls, and completes in well under the API timeout.
+func (s *Server) handleRelinkEpisodes(w http.ResponseWriter, r *http.Request) {
+	entityStats, err := s.store.BackfillEpisodeLinks(r.Context())
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "relink (same_entity) failed: "+err.Error())
+		return
+	}
+	semStats, err := s.store.BackfillSemanticEpisodeLinks(r.Context())
+	if err != nil {
+		errorResponse(w, http.StatusInternalServerError, "relink (semantic) failed: "+err.Error())
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Relink: same_entity[%d entities, %d links, %d hubs skipped] semantic[%d supersedes, %d contradicts, %d unresolved]\n",
+		entityStats.Entities, entityStats.LinksInserted, entityStats.HubsSkipped,
+		semStats.SupersedesInserted, semStats.ContradictsInserted, semStats.RefsUnresolved)
+	successResponse(w, map[string]interface{}{
+		"success":  true,
+		"same_entity": entityStats,
+		"semantic": semStats,
+	})
+}
+
 // stopDream cancels a running dream job, if any
 func (s *Server) stopDream() {
 	s.dreamMu.Lock()

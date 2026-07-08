@@ -109,6 +109,7 @@ func (s *Server) setupRouter() {
 		r.Get("/admin/reembed", s.handleGetReembed)
 		r.Post("/admin/dream", s.handleStartDream)
 		r.Get("/admin/dream", s.handleGetDream)
+		r.Post("/admin/relink", s.handleRelinkEpisodes)
 	})
 
 	s.router = r

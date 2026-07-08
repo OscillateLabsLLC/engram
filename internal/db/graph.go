@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/oscillatelabsllc/engram/internal/models"
@@ -311,4 +312,288 @@ func anyMember(members []string, set map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// backfillHubCap mirrors the dreamer's maxSharedEpisodeLinks: an entity shared
+// by more than this many episodes is a hub and its same_entity links are
+// skipped, since linking everything through a ubiquitous entity carries no
+// signal and grows quadratically.
+const backfillHubCap = 25
+
+// BackfillLinkStats reports the outcome of a same_entity link backfill.
+type BackfillLinkStats struct {
+	Entities        int            `json:"entities"`         // entities examined
+	HubsSkipped     int            `json:"hubs_skipped"`     // entities over the hub cap
+	LinksInserted   int            `json:"links_inserted"`   // new episode_links rows created
+	PairsConsidered int            `json:"pairs_considered"` // directed (episode, other) pairs seen
+	HubCap          int            `json:"hub_cap"`          // the cap applied this run
+	HubLinksPruned  int            `json:"hub_links_pruned"` // stale over-cap same_entity links removed
+	SharePercentile map[string]int `json:"share_percentile"` // eps/entity distribution (p50..p99,max)
+}
+
+// pruneHubLinks deletes same_entity episode links whose via_entity_id is shared
+// by more than hubCap episodes — the hub entities the adaptive cap now excludes.
+// This retracts co-occurrence noise a looser prior cap admitted. Typed edges
+// (supersedes/contradicts) have a NULL via_entity_id and are never touched.
+func (s *Store) pruneHubLinks(ctx context.Context, hubCap int) (int, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM episode_links
+		WHERE relationship = 'same_entity'
+		  AND via_entity_id IN (
+			SELECT entity_id FROM (
+				SELECT entity_id, COUNT(DISTINCT source_episode_id) AS eps FROM (
+					SELECT subject_entity_id AS entity_id, source_episode_id FROM knowledge
+					WHERE subject_entity_id IS NOT NULL AND subject_entity_id != ''
+					  AND source_episode_id IS NOT NULL AND source_episode_id != ''
+					UNION
+					SELECT object_entity_id AS entity_id, source_episode_id FROM knowledge
+					WHERE object_entity_id IS NOT NULL AND object_entity_id != ''
+					  AND source_episode_id IS NOT NULL AND source_episode_id != ''
+				) GROUP BY entity_id
+			) WHERE eps > ?
+		  )
+	`, hubCap)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prune hub links: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, nil
+	}
+	return int(n), nil
+}
+
+// entityShareCounts returns, for every entity referenced by a triple, the
+// number of distinct episodes referencing it — the quantity the hub cap is
+// applied to. Counts only; no entity identity leaves this method.
+func (s *Store) entityShareCounts(ctx context.Context) ([]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT COUNT(DISTINCT source_episode_id) AS eps FROM (
+			SELECT subject_entity_id AS entity_id, source_episode_id FROM knowledge
+			WHERE subject_entity_id IS NOT NULL AND subject_entity_id != ''
+			  AND source_episode_id IS NOT NULL AND source_episode_id != ''
+			UNION
+			SELECT object_entity_id AS entity_id, source_episode_id FROM knowledge
+			WHERE object_entity_id IS NOT NULL AND object_entity_id != ''
+			  AND source_episode_id IS NOT NULL AND source_episode_id != ''
+		) GROUP BY entity_id
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute entity share counts: %w", err)
+	}
+	defer rows.Close()
+	var counts []int
+	for rows.Next() {
+		var eps int
+		if err := rows.Scan(&eps); err != nil {
+			return nil, err
+		}
+		counts = append(counts, eps)
+	}
+	return counts, rows.Err()
+}
+
+// adaptiveHubCap picks the episodes-per-entity threshold above which an entity
+// is treated as a hub. A dense personal store connects almost everything
+// through a handful of topic entities ("Homelab", "Caldera"); a fixed cap of 25
+// let those through and drowned real links in co-occurrence noise. The adaptive
+// cap is the 90th percentile of the eps/entity distribution, floored at
+// hubCapFloor so a sparse store doesn't over-prune. This means "an entity in
+// more episodes than 90% of entities is a topic, not a connection."
+const hubCapFloor = 6
+
+func adaptiveHubCap(counts []int) int {
+	if len(counts) == 0 {
+		return hubCapFloor
+	}
+	sorted := make([]int, len(counts))
+	copy(sorted, counts)
+	sortInts(sorted)
+	idx := (len(sorted) * 90) / 100
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	cap := sorted[idx]
+	if cap < hubCapFloor {
+		cap = hubCapFloor
+	}
+	return cap
+}
+
+func percentileMap(counts []int) map[string]int {
+	if len(counts) == 0 {
+		return map[string]int{}
+	}
+	sorted := make([]int, len(counts))
+	copy(sorted, counts)
+	sortInts(sorted)
+	at := func(p int) int {
+		i := (len(sorted) * p) / 100
+		if i >= len(sorted) {
+			i = len(sorted) - 1
+		}
+		return sorted[i]
+	}
+	return map[string]int{
+		"p50": at(50), "p75": at(75), "p90": at(90),
+		"p95": at(95), "p99": at(99), "max": sorted[len(sorted)-1],
+	}
+}
+
+func sortInts(a []int) { sort.Ints(a) }
+
+// BackfillEpisodeLinks derives same_entity episode links from the existing
+// knowledge graph, without re-running enrichment. For every entity referenced
+// by a triple it links each source episode to every other episode sharing that
+// entity — the exact derivation the dreamer performs incrementally in
+// linkSharedEntityEpisodes, run in one batch over the whole corpus. It is
+// idempotent: InsertEpisodeLink's INSERT OR IGNORE dedups on
+// (source, target, relationship), so re-running only adds links for newly
+// shared entities. Hub entities over backfillHubCap are skipped, matching the
+// dreamer. Only episode_links is written; knowledge and entities are untouched.
+func (s *Store) BackfillEpisodeLinks(ctx context.Context) (BackfillLinkStats, error) {
+	var stats BackfillLinkStats
+
+	// Derive the hub cap from this corpus's own eps/entity distribution so a
+	// dense personal store prunes its topic entities instead of drowning real
+	// links in co-occurrence noise. Report the distribution for transparency.
+	shareCounts, err := s.entityShareCounts(ctx)
+	if err != nil {
+		return stats, err
+	}
+	hubCap := adaptiveHubCap(shareCounts)
+	stats.HubCap = hubCap
+	stats.SharePercentile = percentileMap(shareCounts)
+
+	// Prune same_entity links routed through entities now over the cap. A prior
+	// run at a looser cap may have inserted hub links this run would skip;
+	// lowering the cap only matters if those stale hub links are removed too.
+	// Only same_entity links carry via_entity_id, so typed edges are untouched.
+	pruned, err := s.pruneHubLinks(ctx, hubCap)
+	if err != nil {
+		return stats, err
+	}
+	stats.HubLinksPruned = pruned
+
+	// Every entity that participates in at least one triple, as subject or object.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT entity_id FROM (
+			SELECT subject_entity_id AS entity_id FROM knowledge
+			WHERE subject_entity_id IS NOT NULL AND subject_entity_id != ''
+			UNION
+			SELECT object_entity_id AS entity_id FROM knowledge
+			WHERE object_entity_id IS NOT NULL AND object_entity_id != ''
+		)
+	`)
+	if err != nil {
+		return stats, fmt.Errorf("failed to list entities for backfill: %w", err)
+	}
+	var entityIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return stats, fmt.Errorf("failed to scan entity id: %w", err)
+		}
+		entityIDs = append(entityIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return stats, err
+	}
+	rows.Close()
+
+	// For each entity, find every episode referencing it and link each such
+	// episode to the others through this entity. FindEpisodesSharingEntities
+	// excludes one episode; we call it once per episode in the shared set so
+	// links are created in both directions (the UNIQUE constraint keeps the
+	// mirror pair from double-counting on read).
+	for _, entityID := range entityIDs {
+		stats.Entities++
+
+		// All episodes referencing this entity: pass empty exclude to get the
+		// full set, then fan out per-episode.
+		episodes, err := s.FindEpisodesSharingEntities(ctx, []string{entityID}, "")
+		if err != nil {
+			return stats, fmt.Errorf("backfill: find episodes for entity %s: %w", entityID, err)
+		}
+		if len(episodes) < 2 {
+			continue // nothing to link
+		}
+		if len(episodes) > hubCap {
+			stats.HubsSkipped++
+			continue
+		}
+
+		for i, src := range episodes {
+			for j, dst := range episodes {
+				if i == j {
+					continue
+				}
+				stats.PairsConsidered++
+				link := &models.EpisodeLink{
+					SourceEpisodeID: src,
+					TargetEpisodeID: dst,
+					Relationship:    "same_entity",
+					ViaEntityID:     entityID,
+				}
+				before := stats.LinksInserted
+				inserted, err := s.insertEpisodeLinkCounted(ctx, link)
+				if err != nil {
+					return stats, fmt.Errorf("backfill: link %s->%s via %s: %w", src, dst, entityID, err)
+				}
+				if inserted {
+					stats.LinksInserted = before + 1
+				}
+			}
+		}
+	}
+
+	return stats, nil
+}
+
+// insertEpisodeLinkCounted inserts a link and reports whether a new row was
+// created (false when INSERT OR IGNORE skipped a duplicate). It mirrors
+// InsertEpisodeLink but returns the affected-row count so the backfill can
+// distinguish new links from re-runs.
+func (s *Store) insertEpisodeLinkCounted(ctx context.Context, link *models.EpisodeLink) (bool, error) {
+	id := link.ID
+	if id == "" {
+		id = link.SourceEpisodeID + ":" + link.TargetEpisodeID + ":" + link.Relationship + ":" + link.ViaEntityID
+	}
+	weight := link.Weight
+	if weight == 0 {
+		weight = 1.0
+	}
+	var viaEntityID interface{}
+	if link.ViaEntityID != "" {
+		viaEntityID = link.ViaEntityID
+	}
+
+	res, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO episode_links (id, source_episode_id, target_episode_id, relationship, via_entity_id, weight, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, id, link.SourceEpisodeID, link.TargetEpisodeID, link.Relationship, viaEntityID, weight)
+	if err != nil {
+		return false, fmt.Errorf("failed to insert episode link: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, nil // driver can't report; treat as inserted-unknown, non-fatal
+	}
+	return n > 0, nil
+}
+
+// deleteEpisodeLink removes a specific (source, target, relationship) edge if it
+// exists. Used to retract a stale reverse supersedes edge when orientation flips
+// the direction, so the graph never carries a bidirectional supersession.
+func (s *Store) deleteEpisodeLink(ctx context.Context, source, target, relationship string) error {
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM episode_links
+		WHERE source_episode_id = ? AND target_episode_id = ? AND relationship = ?
+	`, source, target, relationship)
+	if err != nil {
+		return fmt.Errorf("failed to delete episode link: %w", err)
+	}
+	return nil
 }
