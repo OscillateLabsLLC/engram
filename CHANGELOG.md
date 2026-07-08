@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.0.0](https://github.com/OscillateLabsLLC/engram/compare/v2.7.0...v3.0.0) (2026-07-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* removes the add_knowledge and link_episodes MCP tools and the knowledge/entities/episode_links tables. A startup drop-migration removes the tables from existing databases.
+
+### Features
+
+* retire the knowledge-graph surface (triples, entities, episode links) ([918ae7d](https://github.com/OscillateLabsLLC/engram/commit/918ae7d1b864375fe941d8a2e37e8f2941e1cc48))
+
+
+### Bug Fixes
+
+* **shutdown:** bound graceful drain — SSE clients hang shutdown until SIGKILL ([a118796](https://github.com/OscillateLabsLLC/engram/commit/a11879620933004f3b38e566163ed39487a6f13f))
+* **shutdown:** bound graceful drain so SSE clients cannot hang shutdown ([e9fd618](https://github.com/OscillateLabsLLC/engram/commit/e9fd618b5109db2bd4c23e5a86966697dfaa4666))
+
 ## [2.7.0](https://github.com/OscillateLabsLLC/engram/compare/v2.6.2...v2.7.0) (2026-07-07)
 
 
