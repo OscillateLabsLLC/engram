@@ -32,9 +32,9 @@ type ReembedStatus struct {
 	Error      string     `json:"error,omitempty"`
 }
 
-// handleStartReembed launches an async re-embed pass over episodes, entities,
-// and knowledge. Default mode regenerates only stale rows (missing embedding
-// or stamped with a different model); {"force": true} regenerates everything.
+// handleStartReembed launches an async re-embed pass over episodes. Default
+// mode regenerates only stale rows (missing embedding or stamped with a
+// different model); {"force": true} regenerates everything.
 func (s *Server) handleStartReembed(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Force bool `json:"force"`
@@ -125,9 +125,9 @@ func (s *Server) handleGetReembed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// runReembed walks all three embedded tables and regenerates vectors.
-// Failures are counted and skipped — keyset pagination guarantees forward
-// progress, and a later run retries anything still stale.
+// runReembed walks the episodes table and regenerates vectors. Failures are
+// counted and skipped — keyset pagination guarantees forward progress, and a
+// later run retries anything still stale.
 func (s *Server) runReembed(ctx context.Context, model string, force bool) {
 	tables := []struct {
 		name   string
@@ -141,24 +141,6 @@ func (s *Server) runReembed(ctx context.Context, model string, force bool) {
 			},
 			update: func(ctx context.Context, id string, emb []float32) error {
 				return s.store.UpdateEpisodeEmbedding(ctx, id, emb, model)
-			},
-		},
-		{
-			name: "entities",
-			list: func(ctx context.Context, afterID string, limit int) ([]db.ReembedItem, error) {
-				return s.store.ListEntitiesForReembed(ctx, model, afterID, limit, force)
-			},
-			update: func(ctx context.Context, id string, emb []float32) error {
-				return s.store.UpdateEntityEmbedding(ctx, id, emb, model)
-			},
-		},
-		{
-			name: "knowledge",
-			list: func(ctx context.Context, afterID string, limit int) ([]db.ReembedItem, error) {
-				return s.store.ListKnowledgeForReembed(ctx, model, afterID, limit, force)
-			},
-			update: func(ctx context.Context, id string, emb []float32) error {
-				return s.store.UpdateKnowledgeEmbedding(ctx, id, emb, model)
 			},
 		},
 	}
