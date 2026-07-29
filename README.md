@@ -1,5 +1,7 @@
 # Engram
 
+[![MCP Toplist](https://mcptoplist.com/badge/pulsemcp%2Foscillatelabs-engram.svg)](https://mcptoplist.com/server/pulsemcp%2Foscillatelabs-engram)
+
 [![Status: Active](https://img.shields.io/badge/status-active-brightgreen)](https://github.com/OscillateLabsLLC/.github/blob/main/SUPPORT_STATUS.md)
 [![Build](https://github.com/OscillateLabsLLC/engram/actions/workflows/build.yml/badge.svg)](https://github.com/OscillateLabsLLC/engram/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
