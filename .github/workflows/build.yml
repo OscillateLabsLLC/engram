@@ -50,11 +50,3 @@ jobs:
         env:
           CGO_ENABLED: "1"
         run: go build -v -o engram${{ matrix.os == 'windows-latest' && '.exe' || '' }} ./cmd/engram/main.go
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: engram-${{ matrix.os }}
-          path: |
-            engram
-            engram.exe

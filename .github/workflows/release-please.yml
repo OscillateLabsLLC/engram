@@ -76,6 +76,8 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
+          # Job-to-job handoff only; release assets live on the GitHub Release.
+          retention-days: 1
 
   upload-release-assets:
     needs: [release-please, build-and-upload]
