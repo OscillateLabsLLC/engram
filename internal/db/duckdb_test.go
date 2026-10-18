@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1503,4 +1504,48 @@ func setupTestStore(t *testing.T) *Store {
 		t.Fatalf("Failed to create test store: %v", err)
 	}
 	return store
+}
+
+func TestTagsNormalizedAtStore(t *testing.T) {
+	store := setupTestStore(t)
+	defer store.Close()
+
+	ctx := context.Background()
+
+	ep := &models.Episode{
+		Content: "Tag normalization content",
+		Source:  "test",
+		Tags:    []string{`"project"`, "skill_fallback", "Project"},
+	}
+	if err := store.InsertEpisode(ctx, ep); err != nil {
+		t.Fatalf("Insert failed: %v", err)
+	}
+
+	t.Run("insert stores canonical tags", func(t *testing.T) {
+		retrieved, _ := store.GetEpisode(ctx, ep.ID)
+		if !reflect.DeepEqual(retrieved.Tags, []string{"project", "skill-fallback"}) {
+			t.Errorf("Tags = %v, want [project skill-fallback]", retrieved.Tags)
+		}
+	})
+
+	t.Run("search filter matches non-canonical spelling", func(t *testing.T) {
+		results, err := store.Search(ctx, models.SearchParams{Tags: []string{`"Skill_Fallback"`}, MaxResults: 10})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if len(results) != 1 || results[0].ID != ep.ID {
+			t.Errorf("Expected the episode via normalized tag filter, got %d results", len(results))
+		}
+	})
+
+	t.Run("update stores canonical tags", func(t *testing.T) {
+		newTags := []string{"'Deprecated'", "deprecated"}
+		if err := store.UpdateEpisode(ctx, ep.ID, models.UpdateParams{Tags: &newTags}); err != nil {
+			t.Fatalf("Update failed: %v", err)
+		}
+		retrieved, _ := store.GetEpisode(ctx, ep.ID)
+		if !reflect.DeepEqual(retrieved.Tags, []string{"deprecated"}) {
+			t.Errorf("Tags = %v, want [deprecated]", retrieved.Tags)
+		}
+	})
 }

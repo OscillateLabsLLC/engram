@@ -65,7 +65,7 @@ func (s *Server) registerTools() {
 	// add_memory tool
 	s.mcpServer.AddTool(mcp.Tool{
 		Name:        "add_memory",
-		Description: "Store a new episode in memory",
+		Description: "Store a new episode in memory. Keep each episode to one topic: if the content covers several unrelated subjects, store one episode per subject. Multi-topic episodes dilute the embedding and rank poorly for every topic they contain. Make one add_memory call per episode, with each field passed as its own parameter.",
 		InputSchema: mcp.ToolInputSchema{
 			Type: "object",
 			Properties: map[string]interface{}{
@@ -98,7 +98,7 @@ func (s *Server) registerTools() {
 					"items": map[string]interface{}{
 						"type": "string",
 					},
-					"description": "Tags for categorization",
+					"description": "Tags for categorization, as plain strings (e.g. [\"project\", \"oscillate-labs\"]). Tags are stored in lowercase kebab-case; surrounding quotes, spaces and underscores are normalized. Reuse existing tags rather than inventing near-synonyms (prefer 'preference' over a new 'preferences').",
 				},
 				"valid_at": map[string]interface{}{
 					"type":        "string",

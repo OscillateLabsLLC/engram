@@ -273,6 +273,7 @@ func (s *Store) InsertEpisode(ctx context.Context, ep *models.Episode) error {
 	if ep.GroupID == "" {
 		ep.GroupID = "default"
 	}
+	ep.Tags = models.NormalizeTags(ep.Tags)
 
 	// Convert tags to JSON for DuckDB LIST type
 	var tagsJSON interface{}
@@ -335,6 +336,8 @@ const episodeCols = `id, content, name, source, source_model, source_description
 
 // Search finds episodes matching the given parameters
 func (s *Store) Search(ctx context.Context, params models.SearchParams) ([]models.Episode, error) {
+	params.Tags = models.NormalizeTags(params.Tags)
+
 	// Determine effective search mode
 	mode := params.SearchMode
 	if mode == "" {
@@ -710,7 +713,7 @@ func (s *Store) UpdateEpisode(ctx context.Context, id string, params models.Upda
 
 	// Convert tags to JSON if provided
 	if params.Tags != nil {
-		tagsJSON, _ := json.Marshal(*params.Tags)
+		tagsJSON, _ := json.Marshal(models.NormalizeTags(*params.Tags))
 		updates = append(updates, "tags = ?")
 		args = append(args, string(tagsJSON))
 	}
