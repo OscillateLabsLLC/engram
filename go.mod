@@ -26,7 +26,7 @@ require (
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/invopop/jsonschema v0.13.0 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
