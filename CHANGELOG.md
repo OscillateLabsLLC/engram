@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.1.0](https://github.com/OscillateLabsLLC/engram/compare/v3.0.0...v3.1.0) (2026-11-04)
+
+
+### Features
+
+* store tags in one canonical form ([a46db31](https://github.com/OscillateLabsLLC/engram/commit/a46db3160c4fe142153257a10326069976331810))
+* store tags in one canonical form ([5b8b9d5](https://github.com/OscillateLabsLLC/engram/commit/5b8b9d5a90be36a714f0e596527a9f982c008789))
+
 ## [3.0.0](https://github.com/OscillateLabsLLC/engram/compare/v2.7.0...v3.0.0) (2026-07-08)
 
 
